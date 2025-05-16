@@ -185,6 +185,16 @@ const totalPoints = (pointsObj) => {
 };
 
 
+const [loginLogs, setLoginLogs] = useState([]);
+
+useEffect(() => {
+  const ref = collection(db, 'parentLogins');
+  return onSnapshot(ref, qs => {
+    const logs = qs.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    logs.sort((a, b) => (b.loginTime || '').localeCompare(a.loginTime || ''));
+    setLoginLogs(logs);
+  });
+}, []);
 
 
   const handleRegisterHighStudent = async () => {
@@ -796,6 +806,8 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
          <TabsTrigger value="makeup">보강관리</TabsTrigger>
            <TabsTrigger value="high">고등부 관리</TabsTrigger>
             <TabsTrigger value="high-payments">고등부 결제</TabsTrigger>
+            <TabsTrigger value="login">로그인기록</TabsTrigger>
+
 
         </TabsList>
 
@@ -1923,6 +1935,37 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
           )}
         </div>
       </TabsContent>
+<TabsContent value="login">
+  <Card>
+    <CardContent>
+      <h2 className="text-xl font-semibold mb-4">학부모 로그인 기록</h2>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>학생 이름</TableHead>
+            <TableHead>로그인 시간</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {loginLogs.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={2} className="text-center text-gray-500">
+                로그인 기록이 없습니다.
+              </TableCell>
+            </TableRow>
+          ) : (
+            loginLogs.map(log => (
+              <TableRow key={log.id}>
+                <TableCell>{log.studentName}</TableCell>
+                <TableCell>{log.loginTime?.replace("T", " ").slice(0, 19)}</TableCell>
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
+    </CardContent>
+  </Card>
+</TabsContent>
 
       </Tabs>
 
