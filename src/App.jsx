@@ -141,6 +141,20 @@ const [bookCompletedDate, setBookCompletedDate] = useState(new Date().toISOStrin
 
   const [selectedStudent, setSelectedStudent] = useState(null);
 
+const pointFields = ["출석", "숙제", "수업태도", "시험", "문제집완료"];
+
+
+useEffect(() => {
+  const ref = collection(db, 'students');
+  return onSnapshot(ref, qs => {
+    const map = {};
+    qs.forEach(doc => {
+      const data = doc.data();
+      map[doc.id] = data.points || {};
+    });
+    setPointsData(map);
+  });
+}, []);
 
   const [newHighStudent, setNewHighStudent] = useState({
     name: '',
@@ -150,6 +164,28 @@ const [bookCompletedDate, setBookCompletedDate] = useState(new Date().toISOStrin
     weekdays: { 월: false, 화: false, 수: false, 목: false, 금: false },
     type: '월제'
   });
+
+  // ✅ 포인트 증감 함수
+const adjustPoint = async (student, field, delta) => {
+  try {
+    await updateDoc(
+      doc(db, "students", student.id),
+      { [`points.${field}`]: increment(delta) }
+    );
+  } catch (error) {
+    console.error("포인트 저장 실패:", error);
+    alert("Firestore 저장 오류");
+  }
+};
+
+
+// ✅ 총 포인트 계산 함수
+const totalPoints = (pointsObj) => {
+  return pointFields.reduce((sum, key) => sum + (pointsObj?.[key] || 0), 0);
+};
+
+
+
 
   const handleRegisterHighStudent = async () => {
     const selectedDays = Object.entries(newHighStudent.weekdays)
@@ -294,15 +330,7 @@ const handleEditHighStudent = (s) => {
     return onSnapshot(ref, qs => setPaymentCompleted(qs.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
   }, []);
 
-  useEffect(() => {
-    const ref = collection(db, 'points');
-    return onSnapshot(ref, qs => {
-      const map = {};
-      qs.docs.forEach(d => map[d.id] = d.data().points);
-      setPointsData(map);
-    });
-  }, []);
-
+  
   useEffect(() => {
    const ref = collection(db, 'routines');
    const unsub = onSnapshot(ref, qs => {
@@ -1459,20 +1487,42 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
 
 
         {/* 포인트관리 */}
-        <TabsContent value="points">
-          <table className="w-full border-collapse">
-            <thead><tr><th>이름</th><th>포인트</th><th>추가</th></tr></thead>
-            <tbody>
-              {students.map(s=>(
-                <tr key={s.id}>
-                  <td>{s.name}</td>
-                  <td>{pointsData[s.id]||0}</td>
-                  <td><Button size="sm" className="px-2 py-1 text-xs" onClick={()=>handlePoint(s.id)}>+1</Button></td>
-                </tr>
+       <TabsContent value="points">
+  <Card>
+    <CardContent className="space-y-4">
+      <h2 className="text-xl font-semibold">포인트 관리</h2>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>이름</TableHead>
+            {pointFields.map(field => (
+              <TableHead key={field}>{field}</TableHead>
+            ))}
+            <TableHead>총합</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {students.map(s => (
+            <TableRow key={s.id}>
+              <TableCell>{s.name}</TableCell>
+              {pointFields.map(field => (
+                <TableCell key={field}>
+                  <div className="flex items-center gap-2">
+                    <span>{pointsData[s.id]?.[field] || 0}</span>
+                    <Button size="xs" onClick={() => adjustPoint(s, field, +1)}>+1</Button>
+                    <Button size="xs" variant="destructive" onClick={() => adjustPoint(s, field, -1)}>-1</Button>
+                  </div>
+                </TableCell>
               ))}
-            </tbody>
-          </table>
-        </TabsContent>
+              <TableCell className="font-bold">{totalPoints(pointsData[s.id])}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </CardContent>
+  </Card>
+</TabsContent>
+
 
 
        <TabsContent value="notices">
