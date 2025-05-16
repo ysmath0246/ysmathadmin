@@ -1953,6 +1953,7 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
                 로그인 기록이 없습니다.
               </TableCell>
             </TableRow>
+          
           ) : (
             loginLogs.map(log => (
               <TableRow key={log.id}>
