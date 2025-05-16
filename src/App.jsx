@@ -13,6 +13,51 @@ import StudentRow from './StudentRow';
 import StudentCalendarModal from './StudentCalendarModal';
 import Holidays from 'date-holidays';
 
+const ADMIN_PASSWORD = '0606';
+
+export default function App() {
+  const [authorized, setAuthorized] = useState(false);
+  const [inputPassword, setInputPassword] = useState("");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("admin_login");
+    if (saved === "ok") setAuthorized(true);
+  }, []);
+
+  if (!authorized) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-gray-100">
+        <h1 className="text-xl font-bold mb-4">🔐 관리자 로그인</h1>
+        <input
+          type="password"
+          placeholder="비밀번호 입력"
+          value={inputPassword}
+          onChange={(e) => setInputPassword(e.target.value)}
+          className="border p-2 rounded mb-2"
+        />
+        <button
+          onClick={() => {
+            if (inputPassword === ADMIN_PASSWORD) {
+              localStorage.setItem("admin_login", "ok");
+              setAuthorized(true);
+            } else {
+              alert("비밀번호가 틀렸습니다.");
+            }
+          }}
+          className="bg-blue-500 text-white px-4 py-2 rounded"
+        >
+          로그인
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <AppMain />
+  );
+}
+
+function AppMain() {
 const hd = new Holidays('KR');
 const year = new Date().getFullYear();
 const publicHolidays = hd.getHolidays(year).map(h => h.date);
@@ -33,7 +78,8 @@ function findNextScheduledDate(lastDateStr, scheduledDays) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-export default function App() {
+
+  
   // ✅ 상태 선언
   const [students, setStudents] = useState([]);
   const [attendance, setAttendance] = useState({});
@@ -697,7 +743,14 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
 
   alert('수업 변경이 저장되었습니다. 루틴이 곧 반영됩니다.');
 };
-
+ const logoutButton = (
+    <div className="fixed top-2 right-2 z-50">
+      <Button size="sm" variant="outline" onClick={() => {
+        localStorage.removeItem("admin_login");
+        window.location.reload();
+      }}>로그아웃</Button>
+    </div>
+  );
 
 
   return (
