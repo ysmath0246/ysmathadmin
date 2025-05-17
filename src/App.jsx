@@ -12,6 +12,7 @@ import { generateScheduleWithRollovers, publicHolidaysKR } from './firebase/logi
 import StudentRow from './StudentRow';
 import StudentCalendarModal from './StudentCalendarModal';
 import Holidays from 'date-holidays';
+import { increment } from "firebase/firestore";
 
 const ADMIN_PASSWORD = '0606';
 
@@ -1514,7 +1515,7 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {students.map(s => (
+          {[...students].sort((a, b) => a.name.localeCompare(b.name)).map(s => (
             <TableRow key={s.id}>
               <TableCell>{s.name}</TableCell>
               {pointFields.map(field => (
