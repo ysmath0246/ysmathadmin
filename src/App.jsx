@@ -171,13 +171,18 @@ const adjustPoint = async (student, field, delta) => {
   try {
     await updateDoc(
       doc(db, "students", student.id),
-      { [`points.${field}`]: increment(delta) }
+      {
+        [`points.${field}`]: increment(delta),
+        totalPoints: increment(delta),
+        availablePoints: increment(delta),
+      }
     );
   } catch (error) {
     console.error("포인트 저장 실패:", error);
     alert("Firestore 저장 오류");
   }
 };
+
 
 
 // ✅ 총 포인트 계산 함수
@@ -782,6 +787,19 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
 
   alert('수업 변경이 저장되었습니다. 루틴이 곧 반영됩니다.');
 };
+
+const [deductions, setDeductions] = useState([]);
+const [deductionModalStudent, setDeductionModalStudent] = useState(null);
+
+useEffect(() => {
+  const ref = collection(db, 'deductions');
+  return onSnapshot(ref, qs => {
+    const list = qs.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    setDeductions(list);
+  });
+}, []);
+
+
  const logoutButton = (
     <div className="fixed top-2 right-2 z-50">
       <Button size="sm" variant="outline" onClick={() => {
@@ -791,7 +809,7 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
     </div>
   );
 
-
+  
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-4">학원 관리자 앱</h1>
@@ -1501,6 +1519,7 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
 
         {/* 포인트관리 */}
        <TabsContent value="points">
+        
   <Card>
     <CardContent className="space-y-4">
       <h2 className="text-xl font-semibold">포인트 관리</h2>
@@ -1511,29 +1530,103 @@ const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
             {pointFields.map(field => (
               <TableHead key={field}>{field}</TableHead>
             ))}
-            <TableHead>총합</TableHead>
+            <TableHead>총합 / 가용</TableHead>
           </TableRow>
         </TableHeader>
-        <TableBody>
-          {[...students].sort((a, b) => a.name.localeCompare(b.name)).map(s => (
-            <TableRow key={s.id}>
-              <TableCell>{s.name}</TableCell>
-              {pointFields.map(field => (
-                <TableCell key={field}>
-                  <div className="flex items-center gap-2">
-                    <span>{pointsData[s.id]?.[field] || 0}</span>
-                    <Button size="xs" onClick={() => adjustPoint(s, field, +1)}>+1</Button>
-                    <Button size="xs" variant="destructive" onClick={() => adjustPoint(s, field, -1)}>-1</Button>
-                  </div>
-                </TableCell>
-              ))}
-              <TableCell className="font-bold">{totalPoints(pointsData[s.id])}</TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
+       <TableBody>
+  {[...students].sort((a, b) => a.name.localeCompare(b.name)).map(s => (
+    <TableRow key={s.id}>
+      <TableCell>{s.name}</TableCell>
+      {pointFields.map(field => (
+        <TableCell key={field}>
+          <div className="flex items-center gap-2">
+            <span>{pointsData[s.id]?.[field] || 0}</span>
+            <Button size="xs" onClick={() => adjustPoint(s, field, +1)}>+1</Button>
+            <Button size="xs" variant="destructive" onClick={() => adjustPoint(s, field, -1)}>-1</Button>
+          </div>
+        </TableCell>
+      ))}
+       <TableCell className="font-bold">
+  총 {totalPoints(pointsData[s.id]) || 0}점<br />
+  <span className="text-sm text-blue-600">가용 {s.availablePoints || 0}점</span><br />
+  <Button
+    size="xs"
+    variant="outline"
+    className="mt-1"
+    onClick={() => setDeductionModalStudent(s)}
+  >
+    차감내역
+  </Button>
+</TableCell>
+
+    </TableRow>
+  ))}
+</TableBody>
+
       </Table>
     </CardContent>
   </Card>
+
+  {deductionModalStudent && (
+  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div className="bg-white rounded p-6 w-[400px] max-h-[70vh] overflow-auto">
+      <h2 className="text-lg font-bold mb-4">
+        {deductionModalStudent.name}님의 차감내역
+      </h2>
+
+      <ul className="space-y-2">
+        {deductions.filter(d => d.studentId === deductionModalStudent.id).length > 0 ? (
+          deductions
+            .filter(d => d.studentId === deductionModalStudent.id)
+            .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
+            .map(d => (
+             <li key={d.id} className="border p-2 rounded relative">
+  <div className="text-sm font-semibold">🛍 {d.item}</div>
+  <div className="text-sm">포인트: -{d.pointsUsed}점</div>
+  <div className="text-xs text-gray-500">{d.date}</div>
+
+  <Button
+    size="xs"
+    variant="destructive"
+    className="absolute top-2 right-2"
+    onClick={async () => {
+      if (window.confirm("이 차감내역을 정말 취소하시겠습니까?")) {
+        try {
+          // 1. 차감 문서 삭제
+          await deleteDoc(doc(db, "deductions", d.id));
+
+          // 2. 가용 포인트 복원
+          await updateDoc(doc(db, "students", deductionModalStudent.id), {
+            availablePoints: increment(d.pointsUsed)
+          });
+
+          alert("차감이 취소되었고, 포인트가 복구되었습니다.");
+        } catch (err) {
+          console.error(err);
+          alert("차감 취소에 실패했습니다.");
+        }
+      }
+    }}
+  >
+    ❌ 취소
+  </Button>
+</li>
+
+            ))
+        ) : (
+          <li className="text-gray-500">차감 내역이 없습니다.</li>
+        )}
+      </ul>
+
+      <div className="text-right mt-4">
+        <Button variant="outline" size="sm" onClick={() => setDeductionModalStudent(null)}>
+          닫기
+        </Button>
+      </div>
+    </div>
+  </div>
+)}
+
 </TabsContent>
 
 
