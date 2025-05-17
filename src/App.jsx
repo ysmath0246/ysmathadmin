@@ -13,6 +13,7 @@ import StudentRow from './StudentRow';
 import StudentCalendarModal from './StudentCalendarModal';
 import Holidays from 'date-holidays';
 import { increment } from "firebase/firestore";
+ import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';  // 상단에 추가
 
 const ADMIN_PASSWORD = '0606';
 
@@ -800,6 +801,60 @@ useEffect(() => {
 }, []);
 
 
+// ✅ 필요한 상태
+const [shopItems, setShopItems] = useState([]);
+const [newShopItem, setNewShopItem] = useState({ name: '', point: '', imageUrl: '' });
+
+// ✅ Firestore 실시간 구독
+useEffect(() => {
+  const ref = collection(db, 'point_shop');
+  return onSnapshot(ref, qs => {
+    setShopItems(qs.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+  });
+}, []);
+
+// ✅ 상품 등록 핸들러
+const handleAddShopItem = async () => {
+  const { name, point, imageUrl } = newShopItem;
+  if (!name || !point || !imageUrl) return alert("이름, 포인트, 이미지 URL을 모두 입력하세요");
+
+  await addDoc(collection(db, 'point_shop'), {
+    name,
+    point: Number(point),
+    imageUrl,
+    createdAt: new Date().toISOString()
+  });
+
+  setNewShopItem({ name: '', point: '', imageUrl: '' });
+};
+
+
+// ✅ 상품 삭제
+const handleDeleteShopItem = async (id) => {
+  if (!window.confirm("정말 삭제하시겠습니까?")) return;
+
+  await deleteDoc(doc(db, 'point_shop', id));
+};
+
+
+// ✅ 상품 수정
+const handleEditShopItem = async (item) => {
+  const newName = prompt("상품 이름", item.name);
+  const newPoint = prompt("필요 포인트", item.point);
+  const newImage = prompt("이미지 주소", item.imageUrl);
+  if (!newName || !newPoint) return;
+  await updateDoc(doc(db, 'point_shop', item.id), {
+    name: newName,
+    point: Number(newPoint),
+    imageUrl: newImage
+  });
+};
+
+
+
+
+
+
  const logoutButton = (
     <div className="fixed top-2 right-2 z-50">
       <Button size="sm" variant="outline" onClick={() => {
@@ -820,6 +875,7 @@ useEffect(() => {
           <TabsTrigger value="payments">결제관리</TabsTrigger>
           <TabsTrigger value="paid">결제완료</TabsTrigger>
           <TabsTrigger value="points">포인트관리</TabsTrigger>
+          <TabsTrigger value="shop">포인트상점</TabsTrigger>
           <TabsTrigger value="notices">공지사항관리</TabsTrigger>
          <TabsTrigger value="holidays">휴일관리</TabsTrigger>
          <TabsTrigger value="makeup">보강관리</TabsTrigger>
@@ -1629,6 +1685,52 @@ useEffect(() => {
 
 </TabsContent>
 
+
+<TabsContent value="shop">
+  <Card>
+    <CardContent className="space-y-4">
+      <h2 className="text-xl font-semibold">🛍 포인트 상점</h2>
+      <div className="flex gap-2 items-center">
+        <Input
+          placeholder="상품명"
+          value={newShopItem.name}
+          onChange={e => setNewShopItem({ ...newShopItem, name: e.target.value })}
+        />
+        <Input
+          placeholder="필요 포인트"
+          type="number"
+          value={newShopItem.point}
+          onChange={e => setNewShopItem({ ...newShopItem, point: e.target.value })}
+        />
+      <Input
+  placeholder="이미지 URL (예: https://firebasestorage.googleapis.com/...)"
+  value={newShopItem.imageUrl}
+  onChange={e => setNewShopItem({ ...newShopItem, imageUrl: e.target.value })}
+/>
+
+
+
+        <Button onClick={handleAddShopItem}>상품 등록</Button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {shopItems.map(item => (
+          <div key={item.id} className="border p-3 rounded shadow-sm">
+            {item.imageUrl && (
+              <img src={item.imageUrl} alt={item.name} className="w-full h-40 object-cover rounded mb-2" />
+            )}
+            <div className="text-lg font-bold">{item.name}</div>
+            <div className="text-sm text-gray-600">필요 포인트: {item.point}</div>
+            <div className="mt-2 flex gap-2">
+              <Button size="sm" onClick={() => handleEditShopItem(item)}>수정</Button>
+              <Button size="sm" variant="destructive" onClick={() => handleDeleteShopItem(item.id)}>삭제</Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </CardContent>
+  </Card>
+</TabsContent>
 
 
        <TabsContent value="notices">
