@@ -5,168 +5,208 @@ import { Button } from './components/ui/button';
 import { doc, setDoc, addDoc, deleteDoc, collection, getDocs, onSnapshot } from 'firebase/firestore';  // ✅ onSnapshot 추가
 import { db } from './firebase';
 import { generateScheduleWithRollovers } from './firebase/logic';
+import { getDoc } from 'firebase/firestore';
 
 export default function StudentCalendarModal({
   student, onUpdateStudent, onRefreshData, inline,
   attendance, attendanceDate, holidays = [],
     scheduleChanges = [] // 🔥 추가
 }) {
+ // 🔥 changeData 선언을 props 사용 직후로 이동
+  const [changeData, setChangeData] = useState([]);
+
   const [lessons, setLessons] = useState([]);
-  
   const [currentCycle, setCurrentCycle] = useState(0);
-const cycleSize = useMemo(() => {
-  const defaultDays = student.schedules?.map(s => s.day) || [];
-  return defaultDays.length * 4 || 8;
-}, [student]);
+  const cycleSize = useMemo(() => {
+    const defaultDays = student.schedules?.map(s => s.day) || [];
+    return defaultDays.length * 4 || 8;
+  }, [student]);
+
+  // ✅ rawAll은 변경 전 원래 요일 기준으로 생성
+  // 수업변경 이력이 있다면, 가장 첫 이전 스케줄을 사용
+  const originalDays = (changeData.length > 0 && changeData[0].prevSchedules)
+    ? changeData[0].prevSchedules.map(s => s.day)
+    : student.schedules.map(s => s.day);
+
 
 
 // + 🔥 변경된 스케줄 적용 함수
-const getActiveScheduleForDate = async (studentId, date) => {
-  const snapshot = await getDocs(collection(db, 'schedule_changes'));
-  
-  const all = snapshot.docs.map(d => d.data()).filter(c => c.studentId === studentId);
-  const applicable = all.filter(c => c.effectiveDate <= date);
-  if (applicable.length === 0) return student.schedules;
-  applicable.sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate));
-  return applicable[0].schedules;
-};
+const getActiveScheduleForDate = (dateStr) => {
+  const applicable = scheduleChanges
+    .filter(c => c.studentId === student.id && c.effectiveDate <= dateStr)
+    .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate));
 
-
-  // ✅ 루틴 재생성 함수
-  const rebuildLessons = async (customAttendance = attendance, currentRoutineNumber, shouldSave = false) => {
-  0// - const days = student.schedules.map(s => s.day);
- const changesSnapshot = await getDocs(collection(db, 'schedule_changes'));
-const changeData = changesSnapshot.docs.map(d => d.data())
-  .filter(c => c.studentId === student.id)
-  .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
- const getScheduleForDate = (dateStr) => {
-  // dateStr이 '2025-05-10'이라면,
-  // 이 날짜보다 작거나 같은 effectiveDate를 가진 변경만 고려
-  const applicable = changeData
-    .filter(c => c.effectiveDate <= dateStr)
-    .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate)); // 가장 최근 걸 앞에
-
-  if (applicable.length === 0) {
-    return student.schedules; // 🔙 변경 전이면 원래 스케줄
+  if (applicable.length > 0) {
+    return applicable[0].schedules; // 🔹 가장 최근의 변경된 스케줄
   }
 
-  const selectedChange = applicable[0];
-  if (dateStr < selectedChange.effectiveDate) {
-    return student.schedules; // 🔙 아직 적용 안 됐으면 원래 스케줄
-  }
-
-  return selectedChange.schedules; // ✅ 적용 시점부터 변경된 스케줄
+  return student.schedules; // 🔹 변경이 없을 경우 원래 스케줄
 };
 
 
 
-const defaultSchedule = getScheduleForDate(student.startDate);
-const days = defaultSchedule.map(s => s.day);
-const cycleSize = days.length * 4;
-const totalTarget = cycleSize * 10;
+ useEffect(() => {
+   const loadChanges = async () => {
+     const snapshot = await getDocs(collection(db, 'schedule_changes'));
+     const filtered = snapshot.docs.map(d => d.data()).filter(c => c.studentId === student.id);
+     setChangeData(filtered.sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate)));
+   };
+   loadChanges();
+ }, [student.id]);
 
-const rawAll = generateScheduleWithRollovers(student.startDate, days, totalTarget * 2, holidays);
+ const rebuildLessons = async (
+   customAttendance = attendance,
+   currentRoutineNumber,
+   shouldSave = false,
+   source = 'editStudent'
+ ) => {
 
-// ✅ 먼저 raw 생성
+
+
+
+// 🔥 스케줄 변경 구간 분리 생성
+  const changeDate = changeData.length > 0 ? changeData[0].effectiveDate : null;
+
+  // 1) 변경 전(rawBefore): startDate부터 changeDate 직전까지
+  const prevDays = changeData.length > 0 && changeData[0].prevSchedules
+    ? changeData[0].prevSchedules.map(s => s.day)
+    : student.schedules.map(s => s.day);
+  const beforeAll = changeDate
+    ? generateScheduleWithRollovers(student.startDate, prevDays, 365, holidays) // 넉넉히 많이 뽑아서
+        .filter(d => d.date < changeDate)
+    : []; 
+
+  // 2) 변경 후(rawAfter): changeDate부터 충분히
+  const afterDays = changeData.length > 0
+    ? changeData[0].schedules.map(s => s.day)
+    : student.schedules.map(s => s.day);
+  const afterAll = changeDate
+    ? generateScheduleWithRollovers(changeDate, afterDays, 365, holidays)
+    : generateScheduleWithRollovers(student.startDate, afterDays, 365, holidays);
+
+  // 3) 합치기(rawCombined)
+  const rawAll = [...beforeAll, ...afterAll];
+
+
 const raw = rawAll.filter((r) => {
-  const scheduleForDate = getScheduleForDate(r.date);
-  const rDay = new Date(r.date).getDay(); // 0~6
+  const rDate = r.date;
+  const rDay = new Date(rDate).getDay();
   const dayName = ['일', '월', '화', '수', '목', '금', '토'][rDay];
-  return scheduleForDate.map(s => s.day).includes(dayName);
+
+  // 🔹 수업변경탭인 경우만 날짜 이후 변경 스케줄 적용
+  if (source === 'changeSchedule') {
+    const applicable = changeData
+      .filter(c => c.effectiveDate <= rDate)
+      .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate));
+    const schedule = applicable.length > 0 ? applicable[0].schedules : student.schedules;
+    return schedule.some(s => s.day === dayName);
+  }
+
+  // 🔹 수정탭은 무조건 원래 스케줄
+  return student.schedules.some(s => s.day === dayName);
 });
 
-// ✅ 그 다음 filtered 생성
-const filtered = raw.filter(l => !holidays.includes(l.date));
 
-    const baseLessons = filtered.map((l, idx) => {
-      const att = customAttendance?.[l.date]?.[student.name];
-      let status = att?.status;
-      let time = att?.time || '';
-      if (!status) status = l.date < attendanceDate ? '결석' : '미정';
-      return { date: l.date, status, time, originalIndex: idx };
+
+
+  const filtered = raw.filter(l => !holidays.includes(l.date));
+  const baseLessons = filtered.map((l, idx) => {
+    const att = customAttendance?.[l.date]?.[student.name];
+    let status = att?.status;
+    let time = att?.time || '';
+    if (!status) status = l.date < attendanceDate ? '결석' : '미정';
+    return { date: l.date, status, time, originalIndex: idx };
+  });
+
+  const snapshot = await getDocs(collection(db, 'makeups'));
+  const allMakeups = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(m => m.name === student.name);
+  const clinics = allMakeups.filter(m => m.type === '보강');
+
+  for (const m of clinics) {
+    const origin = baseLessons.find(l => l.date === m.sourceDate);
+    if (origin) {
+      if (m.status === '보강가능') {
+        origin.status = '보강가능';
+        origin.makeupDate = m.date;
+      } else if (m.status === '보강완료') {
+        origin.makeupDate = m.date;
+        origin.status = '보강완료';
+      }
+    }
+  }
+
+  let merged = [...baseLessons].sort((a, b) => a.date.localeCompare(b.date));
+  const existingKeys = new Set(merged.map(l => l.date + '-' + l.originalIndex));
+  let lastDate = merged.length > 0 ? merged.at(-1).date : student.startDate;
+
+  while (true) {
+    const normalCount = merged.filter(m => m.status !== '이월').length;
+    if (normalCount >= cycleSize * 10) break;
+    const next = generateScheduleWithRollovers(lastDate, originalDays, 1, holidays).find(d => {
+      const key = d.date + '-' + d.originalIndex;
+      return !existingKeys.has(key);
     });
+    if (!next) break;
+    lastDate = next.date;
+    existingKeys.add(next.date + '-' + next.originalIndex);
+    merged.push({ date: next.date, status: '미정', time: '', originalIndex: next.originalIndex });
+  }
 
-    // 보강/이월 반영
-    const snapshot = await getDocs(collection(db, 'makeups'));
-    const allMakeups = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(m => m.name === student.name);
-    const clinics = allMakeups.filter(m => m.type === '보강');
+  const sorted = merged.sort((a, b) => a.date.localeCompare(b.date));
+  setLessons(sorted);
 
-    for (const m of clinics) {
-      const origin = baseLessons.find(l => l.date === m.sourceDate);
-      if (origin) {
-        if (m.status === '보강가능') {
-          origin.status = '보강가능';
-          origin.makeupDate = m.date;
-        } else if (m.status === '보강완료') {
-          origin.makeupDate = m.date;
-          origin.status = '보강완료';
+  if (shouldSave) {
+    const reindexedForSave = [];
+    let routineNumber = currentRoutineNumber || student.startRoutine || 1;
+    let count = 1;
+    let nonSkipCount = 0;
+
+    for (let i = 0; i < sorted.length; i++) {
+      const l = sorted[i];
+      if (l.status === '이월') {
+        reindexedForSave.push({ ...l, session: 'X', routineNumber });
+      } else {
+        reindexedForSave.push({ ...l, session: count, routineNumber });
+        count++;
+        nonSkipCount++;
+        if (nonSkipCount === cycleSize) {
+          routineNumber++;
+          count = 1;
+          nonSkipCount = 0;
         }
       }
     }
 
-    let merged = [...baseLessons].sort((a, b) => a.date.localeCompare(b.date));
-    const existingKeys = new Set(merged.map(l => l.date + '-' + l.originalIndex));
-    let lastDate = merged.length > 0 ? merged.at(-1).date : student.startDate;
+const routineDoc = await getDoc(doc(db, 'routines', student.id));
+ const existingLessons = routineDoc.exists() ? routineDoc.data().lessons : [];
+ const applicableChange = scheduleChanges
+   ?.filter(c => c.studentId === student.id && c.effectiveDate <= today)
+   ?.sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate))[0];
 
-    while (true) {
-      const normalCount = merged.filter(m => m.status !== '이월').length;
-      if (normalCount >= totalTarget) break;
-      const next = generateScheduleWithRollovers(lastDate, days, 1, holidays).find(d => {
-        const key = d.date + '-' + d.originalIndex;
-        return !existingKeys.has(key);
-      });
-      if (!next) break;
-      lastDate = next.date;
-      existingKeys.add(next.date + '-' + next.originalIndex);
-      merged.push({ date: next.date, status: '미정', time: '', originalIndex: next.originalIndex });
-    }
+ const changeStartDate = applicableChange?.effectiveDate || null;
 
-    const sorted = merged.sort((a, b) => a.date.localeCompare(b.date));
-    setLessons(sorted);
+ // 🔥 변경된 날짜 이후만 덮어쓰기, 이전은 유지
+ const mergedLessons = changeStartDate
+   ? [
+       ...existingLessons.filter(l => l.date < changeStartDate),
+       ...reindexedForSave.filter(l => l.date >= changeStartDate)
+     ]
+   : reindexedForSave;
 
-    if (shouldSave) {
-      // Firestore 저장 (이건 lessons 전체 저장임)
-      const reindexedForSave = [];
-      let routineNumber = currentRoutineNumber || student.startRoutine || 1;
-      let count = 1;
-      let nonSkipCount = 0;
+ await setDoc(doc(db, 'routines', student.id), {
+   studentId: student.id,
+   name: student.name,
+   lessons: mergedLessons,
+   updatedAt: new Date().toISOString()
+ });
 
-      for (let i = 0; i < sorted.length; i++) {
-        const l = sorted[i];
-        if (l.status === '이월') {
-          reindexedForSave.push({ ...l, session: 'X', routineNumber });
-        } else {
-          reindexedForSave.push({ ...l, session: count, routineNumber });
-          count++;
-          nonSkipCount++;
-          if (nonSkipCount === cycleSize) {
-            routineNumber++;
-            count = 1;
-            nonSkipCount = 0;
-          }
-        }
-      }
-
-      await setDoc(doc(db, 'routines', student.id), {
-        studentId: student.id,
-        name: student.name,
-        lessons: reindexedForSave.map(l => ({
-          session: l.session,
-          routineNumber: l.routineNumber,
-          date: l.date,
-          makeupDate: l.makeupDate || null,
-          status: l.status,
-          time: l.time || '-',
-        })),
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-    }
-  };
-
-  useEffect(() => {
-    const routineNum = (student?.startRoutine || 1) + currentCycle;
-    rebuildLessons(undefined, routineNum, false);
-  }, [student, attendanceDate, holidays, currentCycle]);
+  }
+};
+useEffect(() => {
+  const routineNum = (student?.startRoutine || 1) + currentCycle;
+  const panelType = document.body.getAttribute('data-panel') || 'editStudent'; // 'changeSchedule'이면 그에 맞게 호출됨
+  rebuildLessons(attendance, routineNum, false, panelType);
+}, [student, attendanceDate, holidays, currentCycle]);
 
   // ✅ 출석 상태 변경 핸들러
   const handleSelectChange = async (date, newStatus) => {
@@ -229,7 +269,7 @@ const nextDates = generateScheduleWithRollovers(date, days, 10, holidays);
     if (!newAttendance[date]) newAttendance[date] = {};
     newAttendance[date][student.name] = { status: newStatus, time };
     const routineNum = (student?.startRoutine || 1) + currentCycle;
-    await rebuildLessons(newAttendance, routineNum, true);
+    await rebuildLessons(newAttendance, routineNum, false);
 
     if (onRefreshData) {
       await onRefreshData();
@@ -276,12 +316,14 @@ const nextDates = generateScheduleWithRollovers(date, days, 10, holidays);
 useEffect(() => {
   const unsubAttendance = onSnapshot(collection(db, 'attendance'), () => {
     const routineNum = (student?.startRoutine || 1) + currentCycle;
-    rebuildLessons(attendance, routineNum, true);
+const panelType = document.body.getAttribute('data-panel') || 'editStudent';
+    rebuildLessons(attendance, routineNum, true, panelType);
   });
 
   const unsubMakeups = onSnapshot(collection(db, 'makeups'), () => {
     const routineNum = (student?.startRoutine || 1) + currentCycle;
-    rebuildLessons(attendance, routineNum, true);
+const panelType = document.body.getAttribute('data-panel') || 'editStudent';
+    rebuildLessons(attendance, routineNum, true, panelType);
   });
 
   return () => {
@@ -331,9 +373,11 @@ useEffect(() => {
       <div>{l.date}</div>
 
       {(() => {
-       const change = scheduleChanges
-  .filter(sc => sc.studentId === student.id && sc.effectiveDate <= l.date)
-  .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate))[0];
+     // 수업 변경된 첫 날짜에만 표시
+const change = scheduleChanges.find(sc => 
+  sc.studentId === student.id && sc.effectiveDate === l.date
+);
+
 
         if (!change) return null;
 

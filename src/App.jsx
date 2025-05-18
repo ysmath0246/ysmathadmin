@@ -95,6 +95,8 @@ function findNextScheduledDate(lastDateStr, scheduledDays) {
   const [pointsData, setPointsData] = useState({});
 
   const [newStudent, setNewStudent] = useState({ name: '', birth: '', startDate: '', schedules: [{ day: '', time: '' }], parentPhone: '' });
+  const [changeStudent, setChangeStudent] = useState({ schedules: [], effectiveDate: '' });
+
   const [editingId, setEditingId] = useState(null);
   const [search, setSearch] = useState('');
  // 📌 루틴 문서 가져오기 (※ 이 부분이 반드시 필요합니다)
@@ -427,34 +429,30 @@ const enrichedStudents = useMemo(() => {
 
 // ⇒ routines 컬렉션에서 lessons 그대로 가져와 보강·이월 반영 후 첫회차만 뽑기
   const sortedStudentsLimited = useMemo(() => {
-    if (!students.length || !routines.length) return [];
-    const result = [];
-    students.forEach(stu => {
-      // Firestore routines 에서 studentId 맞는 문서 찾기
-      const rt = routines.find(r => r.studentId === stu.id);
-      if (!rt?.lessons) return;
+  if (!enrichedStudents.length || !routines.length) return [];
+  const result = [];
+  enrichedStudents.forEach(stu => {
+    const rt = routines.find(r => r.studentId === stu.id);
+    if (!rt?.lessons) return;
 
-       // lessons 배열 중 session===1 인 녀석만 골라낸다
-      rt.lessons.forEach(l => {
-        if (l.session === 1) { // ⭐ session === 1 먼저 체크
-          if (stu.pauseDate && l.date >= stu.pauseDate) return; // ⭐ pauseDate 조건은 안에
-          result.push({ stu, lesson: { date: l.date, routine: l.routineNumber } });
-        }
-      });
+    rt.lessons.forEach(l => {
+      if (l.session === 1) {
+        if (stu.pauseDate && l.date >= stu.pauseDate) return;
+        result.push({ stu, lesson: { date: l.date, routine: l.routineNumber } });
+      }
     });
+  });
 
-      // 날짜순 정렬
-    result.sort((a, b) => a.lesson.date.localeCompare(b.lesson.date));
+  result.sort((a, b) => a.lesson.date.localeCompare(b.lesson.date));
 
-    // viewDate 기준 ±7일 범위 필터
-    const center = new Date(viewDate);
-    const start = new Date(center); start.setDate(center.getDate() - 7);
-    const end = new Date(center); end.setDate(center.getDate() + 7);
-    return result.filter(({ lesson }) => {
-      const d = new Date(lesson.date);
-      return d >= start && d <= end;
-    });
-  }, [students, routines, viewDate]);
+  const center = new Date(viewDate);
+  const start = new Date(center); start.setDate(center.getDate() - 7);
+  const end = new Date(center); end.setDate(center.getDate() + 7);
+  return result.filter(({ lesson }) => {
+    const d = new Date(lesson.date);
+    return d >= start && d <= end;
+  });
+}, [enrichedStudents, routines, viewDate]);
 
   const calendarRoutineMap = useMemo(() => {
     const map = {};
@@ -543,7 +541,35 @@ const handleEditNotice = (notice) => {
       let docId = '';
 
       if (editingId) {
-        await updateDoc(doc(db, 'students', editingId), data);
+        const hasScheduleChanges = scheduleChanges.some(c => c.studentId === editingId);
+if (hasScheduleChanges) {
+  data.schedules = students.find(s => s.id === editingId)?.schedules || data.schedules;
+}
+// 수정
+const data = {
+  ...newStudent,
+  startRoutine: newStudent.startRoutine || 1,
+  active: true,
+  pauseDate: null
+};
+
+let lessons = [];
+const days = newStudent.schedules.map(s => s.day);
+const cycleSize = days.length * 4;
+
+// 🔸 기존 schedule_changes가 존재하면 그 이전까지는 기존 schedule, 이후는 변경 스케줄로 분기
+if (!scheduleChanges.some(c => c.studentId === editingId)) {
+  const rawLessons = generateScheduleWithRollovers(newStudent.startDate, days, cycleSize * 10);
+  lessons = rawLessons.map((l, i) => ({
+    session: (i % cycleSize) + 1,
+    routineNumber: Math.floor(i / cycleSize) + data.startRoutine,
+    date: l.date,
+    status: '미정',
+    time: '-'
+  }));
+  data.lessons = lessons;
+}
+
         setStudents(s => s.map(x => x.id === editingId ? { ...x, ...data } : x));
         docId = editingId;
         setEditingId(null);
@@ -740,6 +766,7 @@ const recentRepliesInfo = useMemo(() => {
   };
 
   const handleEdit = s => {
+      document.body.setAttribute("data-panel", "editStudent");  // ✅ 여기도 추가
     setNewStudent({
       name: s.name,
       birth: s.birth,
@@ -777,17 +804,17 @@ const recentRepliesInfo = useMemo(() => {
       await deleteDoc(doc(db, 'makeups', id));
     }
   };
-
 const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
- await addDoc(collection(db, 'schedule_changes'), {
-  studentId: selectedStudent.id,  // ✅ 꼭 포함
-  schedules: newStudent.schedules,
-  effectiveDate: newStudent.effectiveDate,
-  createdAt: new Date().toISOString()
-});
+  await addDoc(collection(db, 'schedule_changes'), {
+    studentId: studentId, // ✅ 인자로 받은 studentId 사용
+    schedules: newSchedules, // ✅ 인자로 받은 newSchedules 사용
+    effectiveDate: effectiveDate, // ✅ 인자로 받은 effectiveDate 사용
+    createdAt: new Date().toISOString()
+  });
 
   alert('수업 변경이 저장되었습니다. 루틴이 곧 반영됩니다.');
 };
+
 
 const [deductions, setDeductions] = useState([]);
 const [deductionModalStudent, setDeductionModalStudent] = useState(null);
@@ -850,7 +877,30 @@ const handleEditShopItem = async (item) => {
   });
 };
 
+const [pointLogs, setPointLogs] = useState([]);
+useEffect(() => {
+  const ref = collection(db, 'point_logs');
+  return onSnapshot(ref, qs => {
+    const list = qs.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    setPointLogs(list);
+  });
+}, []);
 
+const updateChangeSchedule = (i, k, v) => {
+  const arr = [...changeStudent.schedules];
+  arr[i][k] = v;
+  setChangeStudent(cs => ({ ...cs, schedules: arr }));
+};
+
+const addChangeScheduleField = () => {
+  setChangeStudent(cs => ({ ...cs, schedules: [...cs.schedules, { day: '', time: '' }] }));
+};
+
+const removeChangeScheduleField = (i) => {
+  const arr = [...changeStudent.schedules];
+  arr.splice(i, 1);
+  setChangeStudent(cs => ({ ...cs, schedules: arr }));
+};
 
 
 
@@ -1129,14 +1179,18 @@ const handleEditShopItem = async (item) => {
   size="sm"
   variant={selectedPanel === 'changeSchedule' ? 'default' : 'outline'}
   onClick={() => {
-    setSelectedPanel('changeSchedule');
-    // ✅ 기존 student의 스케줄을 불러와 초기화!
-   setNewStudent(prev => ({
-  ...prev,
-  schedules: enrichedStudents.find(s => s.id === selectedStudent?.id)?.schedules || [{ day: '', time: '' }]
-}));
+  setSelectedPanel('changeSchedule');
+  document.body.setAttribute('data-panel', 'changeSchedule'); // ✅ Source 구분도 함께 설정
+  setChangeStudent({
+    schedules: enrichedStudents.find(s => s.id === selectedStudent?.id)?.schedules || [{ day: '', time: '' }],
+    effectiveDate: ''
+  });
+}}
 
-  }}
+
+
+
+ 
 >
   수업변경
 </Button>
@@ -1166,67 +1220,104 @@ const handleEditShopItem = async (item) => {
       </div>
 
       {/* 🔥 선택된 패널에 따라 표시 */}
-
-      {selectedPanel === 'changeSchedule' && (
+{selectedPanel === 'changeSchedule' && (
   <div className="space-y-4">
+
+    {/* 🔹 현재 입력 중인 새로운 스케줄 UI */}
     <h3 className="text-md font-semibold">현재 수업 스케줄</h3>
-    {newStudent.schedules.map((s, i) => (
+    {changeStudent.schedules.map((s, i) => (
       <div key={i} className="flex gap-2 items-center">
         <Input
           placeholder="요일 (예: 월)"
           value={s.day}
-          onChange={e => updateSchedule(i, 'day', e.target.value)}
+          onChange={e => updateChangeSchedule(i, 'day', e.target.value)} // ✅ changeStudent용 업데이트 함수
         />
         <Input
           placeholder="시간 (예: 15:00)"
           value={s.time}
-          onChange={e => updateSchedule(i, 'time', e.target.value)}
+          onChange={e => updateChangeSchedule(i, 'time', e.target.value)} // ✅ changeStudent용 업데이트 함수
         />
-        <Button size="xs" variant="destructive" onClick={() => removeScheduleField(i)}>삭제</Button>
+        <Button size="xs" variant="destructive" onClick={() => removeChangeScheduleField(i)}>
+          삭제
+        </Button>
       </div>
     ))}
-    <Button size="sm" className="px-2 py-1 text-xs" onClick={addScheduleField}>+ 수업 추가</Button>
+    <Button size="sm" className="px-2 py-1 text-xs" onClick={addChangeScheduleField}>+ 수업 추가</Button>
 
+    {/* 🔹 변경 적용 시작일 입력 */}
     <div className="mt-4">
       <Input
         type="date"
-        value={newStudent.effectiveDate || ''}
-        onChange={e => setNewStudent(ns => ({ ...ns, effectiveDate: e.target.value }))}
+        value={changeStudent.effectiveDate || ''}
+        onChange={e => setChangeStudent(cs => ({ ...cs, effectiveDate: e.target.value }))}
         placeholder="변경 시작일"
       />
     </div>
 
+    {/* 🔹 변경 저장 버튼 */}
     <Button
       size="sm"
       onClick={async () => {
-        if (!newStudent.effectiveDate) return alert('변경 시작일을 입력하세요!');
+        if (!changeStudent.effectiveDate) return alert('변경 시작일을 입력하세요!');
         if (!selectedStudent?.id) return alert('학생 선택이 필요합니다');
 
+        // 🔥 변경 내용 Firestore에 저장
         await addDoc(collection(db, 'schedule_changes'), {
           studentId: selectedStudent.id,
-          schedules: newStudent.schedules,
-          effectiveDate: newStudent.effectiveDate,
+          schedules: changeStudent.schedules,
+          effectiveDate: changeStudent.effectiveDate,
+            prevSchedules: enrichedStudents.find(s => s.id === selectedStudent.id)?.schedules || [],
           createdAt: new Date().toISOString(),
         });
 
- // 루틴 즉시 재생성 요청
- const routineNum = (selectedStudent?.startRoutine || 1);
- const studentCalendar = document.getElementById('student-calendar');
- if (studentCalendar && studentCalendar.rebuildLessons) {
-   await studentCalendar.rebuildLessons(attendance, routineNum, true);
- }
- // 또는 더 확실하게 전체 리프레시
- if (typeof refreshAllData === 'function') {
-   await refreshAllData();
- }
+        // 🔥 변경된 스케줄을 적용하여 루틴 재생성
+        const routineNum = selectedStudent?.startRoutine || 1;
+        const studentCalendar = document.getElementById('student-calendar');
+
+        if (studentCalendar && studentCalendar.rebuildLessons) {
+          await studentCalendar.rebuildLessons(attendance, routineNum, true, 'changeSchedule'); // ✅ 반드시 'changeSchedule'
+        }
+
+        // 🔄 전체 새로고침
+        if (typeof refreshAllData === 'function') {
+          await refreshAllData();
+        }
+
         alert('수업 변경이 저장되었습니다!');
-        setNewStudent({ ...newStudent, effectiveDate: '' });
+        setChangeStudent({ schedules: [], effectiveDate: '' }); // ✅ 상태 초기화
       }}
     >
       수업 변경 저장
     </Button>
+
+    {/* 🔹 변경 이력 목록 */}
+    {scheduleChanges
+      .filter(c => c.studentId === selectedStudent?.id)
+      .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate))
+      .map((c, i) => (
+        <div key={i} className="p-2 my-2 border rounded bg-blue-50 text-sm">
+          📅 <b>{c.effectiveDate}</b>부터 변경됨:
+          <br />
+          ⏱️ {c.prevSchedules?.map(s => `${s.day} ${s.time}`).join(', ')} → {c.schedules?.map(s => `${s.day} ${s.time}`).join(', ')}
+          <br />
+          <button
+            onClick={async () => {
+              await deleteDoc(doc(db, 'schedule_changes', c.id));
+              alert('변경이 취소되었습니다.');
+              if (typeof refreshAllData === 'function') {
+                await refreshAllData(); // 즉시 반영
+              }
+            }}
+            className="mt-1 text-xs text-red-500 underline"
+          >
+            변경 취소
+          </button>
+        </div>
+      ))}
   </div>
 )}
+
+
 
       {selectedPanel === 'calendar' ? (
         <StudentCalendarModal
@@ -1240,7 +1331,9 @@ const handleEditShopItem = async (item) => {
           setMakeups={setMakeups}
             scheduleChanges={scheduleChanges} 
         />
-      ) : selectedPanel === 'books' ? (
+      ) : 
+      
+      selectedPanel === 'books' ? (
         <div className="space-y-2">
           <Input
             placeholder="책 이름"
@@ -1323,109 +1416,103 @@ const handleEditShopItem = async (item) => {
             </TableBody>
           </Table>
         </div>
+     ) : selectedPanel === 'comments' ? (
+  <div className="space-y-2">
+    <Input
+      type="date"
+      value={commentDate}
+      onChange={e => setCommentDate(e.target.value)}
+      className="mb-2"
+    />
+    <textarea
+      placeholder="코멘트 입력"
+      value={commentText}
+      onChange={e => setCommentText(e.target.value)}
+      rows={3}
+      className="w-full border rounded p-2"
+    />
+
+    <Button
+      size="sm"
+      className="px-2 py-1 text-xs"
+      onClick={async () => {
+        if (!commentText.trim()) {
+          alert('코멘트를 입력하세요!');
+          return;
+        }
+        await addDoc(collection(db, 'comments'), {
+          studentId: selectedStudent.id,
+          name: selectedStudent.name,
+          comment: commentText.trim(),
+          date: commentDate,
+          createdAt: new Date().toISOString(),
+        });
+
+        setCommentText('');
+        alert('저장되었습니다!');
+      }}
+    >
+      저장
+    </Button>
+
+    <h3 className="text-md font-semibold mt-4">저장된 코멘트</h3>
+    <ul className="space-y-4">
+      {comments
+        .filter(c => c.studentId === selectedStudent.id && !c.comment.startsWith('답변:'))
+        .sort((a, b) => (b.date || b.createdAt).localeCompare(a.date || a.createdAt))
+        .map(c => {
+          const replies = comments.filter(r =>
+            r.studentId === selectedStudent.id &&
+            r.parentId === c.id
+          );
+
+          return (
+            <li key={c.id} className="border p-3 rounded shadow-sm">
+              <div className="flex justify-between items-start">
+                <div>
+                  <div className="text-sm font-semibold">{c.date || c.createdAt.slice(0, 10)}</div>
+                  <div className="text-base mt-1 whitespace-pre-line">{c.comment}</div>
+                </div>
+                <Button
+                  size="xs"
+                  variant="destructive"
+                  onClick={async () => {
+                    if (window.confirm('이 코멘트를 삭제하시겠습니까?')) {
+                      await deleteDoc(doc(db, 'comments', c.id));
+                    }
+                  }}
+                >
+                  삭제
+                </Button>
+              </div>
+
+              {replies.map(reply => (
+                <div key={reply.id} className="ml-4 mt-2 p-2 bg-gray-100 rounded">
+                  <div className="text-xs text-gray-500">답변 • {reply.date || reply.createdAt.slice(0, 10)}</div>
+                  <div className="text-sm text-gray-800">{reply.comment.replace('답변: ', '')}</div>
+                </div>
+              ))}
+            </li>
+          );
+        })}
+
+      {comments.filter(c => c.studentId === selectedStudent.id && !c.comment.startsWith('답변:')).length === 0 && (
+        <li className="text-gray-500">등록된 코멘트가 없습니다.</li>
+      )}
+    </ul>
+  </div>
+) : null}
+  </div>
       ) : (
-        <div className="space-y-2">
-          <Input
-  type="date"
-  value={commentDate}
-  onChange={e => setCommentDate(e.target.value)}
-  className="mb-2"
-/>
-<textarea
-  placeholder="코멘트 입력"
-  value={commentText}
-  onChange={e => setCommentText(e.target.value)}
-  rows={3}
-  className="w-full border rounded p-2"
-/>
-
-          <Button
-            size="sm"
-            className="px-2 py-1 text-xs"
-            onClick={async () => {
-              if (!commentText.trim()) {
-                alert('코멘트를 입력하세요!');
-                return;
-              }
-              await addDoc(collection(db, 'comments'), {
-                studentId: selectedStudent.id,
-                name: selectedStudent.name,
-                comment: commentText.trim(),
-                date: commentDate,  // ← 새 필드 추가
-                createdAt: new Date().toISOString(),
-              });
-              
-              setCommentText('');
-              alert('저장되었습니다!');
-            }}
-          >
-            저장
-          </Button>
-
-          <h3 className="text-md font-semibold mt-4">저장된 코멘트</h3>
-<ul className="space-y-4">
-  {comments
-    .filter(c => c.studentId === selectedStudent.id && !c.comment.startsWith('답변:'))
-    .sort((a, b) => (b.date || b.createdAt).localeCompare(a.date || a.createdAt))
-    .map(c => {
-     const replies = comments.filter(r =>
-  r.studentId === selectedStudent.id &&
-  r.parentId === c.id
-);
-
-      return (
-        <li key={c.id} className="border p-3 rounded shadow-sm">
-          <div className="flex justify-between items-start">
-            <div>
-              <div className="text-sm font-semibold">{c.date || c.createdAt.slice(0, 10)}</div>
-              <div className="text-base mt-1 whitespace-pre-line">{c.comment}</div>
-            </div>
-            <Button
-              size="xs"
-              variant="destructive"
-              onClick={async () => {
-                if (window.confirm('이 코멘트를 삭제하시겠습니까?')) {
-                  await deleteDoc(doc(db, 'comments', c.id));
-                }
-              }}
-            >
-              삭제
-            </Button>
-          </div>
-
-          {/* 답변 목록 */}
-          {replies.map(reply => (
-            <div key={reply.id} className="ml-4 mt-2 p-2 bg-gray-100 rounded">
-              <div className="text-xs text-gray-500">답변 • {reply.date || reply.createdAt.slice(0, 10)}</div>
-              <div className="text-sm text-gray-800">{reply.comment.replace('답변: ', '')}</div>
-            </div>
-          ))}
-
-        </li>
-      );
-    })}
-
-  {comments.filter(c => c.studentId === selectedStudent.id && !c.comment.startsWith('답변:')).length === 0 && (
-    <li className="text-gray-500">등록된 코멘트가 없습니다.</li>
-  )}
-</ul>
-
+        <div className="p-4 bg-gray-100 rounded">
+          <p className="text-gray-500">왼쪽 목록에서 학생을 선택하세요.</p>
         </div>
       )}
     </div>
-  ) : (
-    <div className="p-4 bg-gray-100 rounded">
-      <p className="text-gray-500">왼쪽 목록에서 학생을 선택하세요.</p>
-    </div>
-  )}
-</div>
+  </div>
+</TabsContent>
 
-
-          </div>
-        </TabsContent>
-
-   
-      
+  
     {/* 결제관리 */}
 <TabsContent value="payments">
   {/* 월네비게이션 */}
@@ -1573,9 +1660,8 @@ const handleEditShopItem = async (item) => {
 
 
 
-        {/* 포인트관리 */}
-       <TabsContent value="points">
-        
+      {/* 포인트관리 */}
+<TabsContent value="points">
   <Card>
     <CardContent className="space-y-4">
       <h2 className="text-xl font-semibold">포인트 관리</h2>
@@ -1589,41 +1675,42 @@ const handleEditShopItem = async (item) => {
             <TableHead>총합 / 가용</TableHead>
           </TableRow>
         </TableHeader>
-       <TableBody>
-  {[...students].sort((a, b) => a.name.localeCompare(b.name)).map(s => (
-    <TableRow key={s.id}>
-      <TableCell>{s.name}</TableCell>
-      {pointFields.map(field => (
-        <TableCell key={field}>
-          <div className="flex items-center gap-2">
-            <span>{pointsData[s.id]?.[field] || 0}</span>
-            <Button size="xs" onClick={() => adjustPoint(s, field, +1)}>+1</Button>
-            <Button size="xs" variant="destructive" onClick={() => adjustPoint(s, field, -1)}>-1</Button>
-          </div>
-        </TableCell>
-      ))}
-       <TableCell className="font-bold">
-  총 {totalPoints(pointsData[s.id]) || 0}점<br />
-  <span className="text-sm text-blue-600">가용 {s.availablePoints || 0}점</span><br />
-  <Button
-    size="xs"
-    variant="outline"
-    className="mt-1"
-    onClick={() => setDeductionModalStudent(s)}
-  >
-    차감내역
-  </Button>
-</TableCell>
-
-    </TableRow>
-  ))}
-</TableBody>
-
+        <TableBody>
+          {[...students]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(s => (
+              <TableRow key={s.id}>
+                <TableCell>{s.name}</TableCell>
+                {pointFields.map(field => (
+                  <TableCell key={field}>
+                    <div className="flex items-center gap-2">
+                      <span>{pointsData[s.id]?.[field] || 0}</span>
+                      <Button size="xs" onClick={() => adjustPoint(s, field, +1)}>+1</Button>
+                      <Button size="xs" variant="destructive" onClick={() => adjustPoint(s, field, -1)}>-1</Button>
+                    </div>
+                  </TableCell>
+                ))}
+                <TableCell className="font-bold">
+                  총 {totalPoints(pointsData[s.id]) || 0}점<br />
+                  <span className="text-sm text-blue-600">가용 {s.availablePoints || 0}점</span><br />
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="mt-1"
+                    onClick={() => setDeductionModalStudent(s)}
+                  >
+                    차감내역
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+        </TableBody>
       </Table>
     </CardContent>
   </Card>
 
-  {deductionModalStudent && (
+  {/* 차감내역 모달 */}
+ {deductionModalStudent && (
   <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
     <div className="bg-white rounded p-6 w-[400px] max-h-[70vh] overflow-auto">
       <h2 className="text-lg font-bold mb-4">
@@ -1631,61 +1718,36 @@ const handleEditShopItem = async (item) => {
       </h2>
 
       <ul className="space-y-2">
-        {deductions.filter(d => d.studentId === deductionModalStudent.id).length > 0 ? (
-          deductions
+        {pointLogs.length === 0 ? (
+          <li className="text-gray-500">로딩 중...</li>
+        ) : (
+          pointLogs
             .filter(d => d.studentId === deductionModalStudent.id)
             .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
             .map(d => (
-             <li key={d.id} className="border p-2 rounded relative">
-  <div className="text-sm font-semibold">🛍 {d.item}</div>
-  <div className="text-sm">포인트: -{d.pointsUsed}점</div>
-  <div className="text-xs text-gray-500">{d.date}</div>
-
-  <Button
-    size="xs"
-    variant="destructive"
-    className="absolute top-2 right-2"
-    onClick={async () => {
-      if (window.confirm("이 차감내역을 정말 취소하시겠습니까?")) {
-        try {
-          // 1. 차감 문서 삭제
-          await deleteDoc(doc(db, "deductions", d.id));
-
-          // 2. 가용 포인트 복원
-          await updateDoc(doc(db, "students", deductionModalStudent.id), {
-            availablePoints: increment(d.pointsUsed)
-          });
-
-          alert("차감이 취소되었고, 포인트가 복구되었습니다.");
-        } catch (err) {
-          console.error(err);
-          alert("차감 취소에 실패했습니다.");
-        }
-      }
-    }}
-  >
-    ❌ 취소
-  </Button>
-</li>
-
+              <li key={d.id} className="border p-2 rounded relative">
+                <div className="text-sm font-semibold">🛍 {d.item}</div>
+                <div className="text-sm">포인트: -{d.point}점</div>
+                <div className="text-xs text-gray-500">{d.date}</div>
+              </li>
             ))
-        ) : (
+        )}
+        {pointLogs.filter(d => d.studentId === deductionModalStudent.id).length === 0 && (
           <li className="text-gray-500">차감 내역이 없습니다.</li>
         )}
       </ul>
 
-      <div className="text-right mt-4">
-        <Button variant="outline" size="sm" onClick={() => setDeductionModalStudent(null)}>
-          닫기
-        </Button>
+        <div className="mt-4 text-right">
+          <Button variant="outline" onClick={() => setDeductionModalStudent(null)}>
+            닫기
+          </Button>
+        </div>
       </div>
     </div>
-  </div>
-)}
-
+  )}
 </TabsContent>
 
-
+{/* 포인트상점점 */}
 <TabsContent value="shop">
   <Card>
     <CardContent className="space-y-4">
