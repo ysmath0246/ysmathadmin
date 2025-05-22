@@ -2,3 +2,25 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+
+/* 📌 추가: 화면 너비 640px 이하(모바일)에서 반응형 처리 */
+@media screen and (max-width: 640px) {
+  /* 테이블에 가로 스크롤 허용 */
+  .overflow-x-auto {
+    display: block;
+    overflow-x: auto;
+    width: 100%;
+  }
+
+  /* 카드·패널 기본 여백 조정 */
+  .card, .panel {
+    margin: 0.5rem;
+    padding: 1rem;
+ }
+
+  /* 본문 글자 크기 줄이기 */
+  body {
+    font-size: 0.9rem;
+  }
+}
