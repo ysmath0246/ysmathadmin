@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useMemo, Suspense } from 'react';
+import ReactQuill from 'react-quill';   
+import 'react-quill/dist/quill.snow.css';   // ← 여기에 먼저!
 import './index.css';
 import { Card, CardContent } from './components/ui/card';
 import { Button } from './components/ui/button';
@@ -6,7 +8,7 @@ import { Input } from './components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from './components/ui/table';
 import { db } from './firebase';
-import { doc, collection, addDoc, updateDoc, deleteDoc, getDocs, onSnapshot, getDoc, setDoc } from 'firebase/firestore';
+import { doc, collection, addDoc, deleteDoc, updateDoc, getDocs, onSnapshot } from 'firebase/firestore';
 import { saveAs } from 'file-saver';
 import { generateScheduleWithRollovers, publicHolidaysKR } from './firebase/logic';
 import StudentRow from './StudentRow';
@@ -14,6 +16,17 @@ import StudentCalendarModal from './StudentCalendarModal';
 import Holidays from 'date-holidays';
 import { increment } from "firebase/firestore";
  import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';  // 상단에 추가
+
+
+ // ─── 공지사항 HTML → 텍스트 변환 유틸 함수 ───
+// HTML 태그를 제거하되, <p>, <br>은 줄바꿈으로 변환
+const convertText = html =>
+  html
+    .replace(/<p>/g, '\n')
+    .replace(/<\/p>/g, '')
+    .replace(/<br\s*\/?>/g, '\n')
+    .replace(/<[^>]+>/g, '')
+    .trim();
 
 const ADMIN_PASSWORD = '0606';
 
@@ -195,7 +208,17 @@ const totalPoints = (pointsObj) => {
 
 
 const [loginLogs, setLoginLogs] = useState([]);
-
+ const [currentPage, setCurrentPage] = useState(1);        // ← 현재 페이지
+ const logsPerPage = 20;                                    // ← 페이지당 20개씩
+ // 로그인 기록 삭제 핸들러
+ const handleDeleteLog = async (id) => {
+   if (!window.confirm('이 로그인 기록을 삭제하시겠습니까?')) return;
+   await deleteDoc(doc(db, 'parentLogins', id));
+   // 삭제 후, 페이지가 비어 있으면 한 페이지 뒤로
+   if ((currentPage - 1) * logsPerPage >= loginLogs.length - 1) {
+     setCurrentPage(prev => Math.max(prev - 1, 1));
+   }
+ };
 useEffect(() => {
   const ref = collection(db, 'parentLogins');
   return onSnapshot(ref, qs => {
@@ -469,7 +492,7 @@ const enrichedStudents = useMemo(() => {
       await addDoc(collection(db, 'notices'), {
         title: noticeTitle,
         date: noticeDate,
-        content: noticeContent,
+         content: convertText(noticeContent),
       });
       setNoticeTitle('');
       setNoticeDate('');
@@ -482,13 +505,17 @@ const enrichedStudents = useMemo(() => {
 // 공지사항  핸들러
   const handleUpdateNotice = async () => {
     try {
-      await updateDoc(doc(db, 'notices', selectedNotice.id), {
+     await updateDoc(doc(db, 'notices', selectedNotice.id), {
         title: noticeTitle,
         date: noticeDate,
-        content: noticeContent,
+         content: convertText(noticeContent),
       });
       alert('공지사항이 수정되었습니다!');
-      setSelectedNotice(null);
+        // 수정 후 폼도 초기화
+   setNoticeTitle('');
+   setNoticeDate('');
+   setNoticeContent('');
+   setSelectedNotice(null);
     } catch (e) {
       console.error('공지사항 수정 오류:', e);
     }
@@ -531,7 +558,19 @@ const handleEditNotice = (notice) => {
     }
   };
 
-
+ // ✅ 1) 책 수정 핸들러
+  const handleEditBook = async (book) => {
+    const newTitle = prompt("책 제목", book.title);
+    const newGrade = prompt("학년", book.grade);
+    const newDate = prompt("완료일 (YYYY-MM-DD)", book.completedDate);
+   if (!newTitle || !newGrade || !newDate) return;
+    await updateDoc(doc(db, 'books', book.id), {
+      title: newTitle,
+      grade: newGrade,
+      completedDate: newDate
+    });
+    alert("책 정보가 수정되었습니다.");
+  };
   const handleRegister = async () => {
     try {
       const days = newStudent.schedules.map(s => s.day);
@@ -540,36 +579,12 @@ const handleEditNotice = (notice) => {
       const data = { ...newStudent, lessons, startRoutine: newStudent.startRoutine || 1, active: true, pauseDate: null };
       let docId = '';
 
-      if (editingId) {
+        if (editingId) {
         const hasScheduleChanges = scheduleChanges.some(c => c.studentId === editingId);
-if (hasScheduleChanges) {
-  data.schedules = students.find(s => s.id === editingId)?.schedules || data.schedules;
-}
-// 수정
-const data = {
-  ...newStudent,
-  startRoutine: newStudent.startRoutine || 1,
-  active: true,
-  pauseDate: null
-};
-
-let lessons = [];
-const days = newStudent.schedules.map(s => s.day);
-const cycleSize = days.length * 4;
-
-// 🔸 기존 schedule_changes가 존재하면 그 이전까지는 기존 schedule, 이후는 변경 스케줄로 분기
-if (!scheduleChanges.some(c => c.studentId === editingId)) {
-  const rawLessons = generateScheduleWithRollovers(newStudent.startDate, days, cycleSize * 10);
-  lessons = rawLessons.map((l, i) => ({
-    session: (i % cycleSize) + 1,
-    routineNumber: Math.floor(i / cycleSize) + data.startRoutine,
-    date: l.date,
-    status: '미정',
-    time: '-'
-  }));
-  data.lessons = lessons;
-}
-
+        if (hasScheduleChanges) {
+          data.schedules = students.find(s => s.id === editingId)?.schedules || data.schedules;
+        }
+        // 기존 data(=newStudent 기반)를 그대로 사용하여 업데이트
         setStudents(s => s.map(x => x.id === editingId ? { ...x, ...data } : x));
         docId = editingId;
         setEditingId(null);
@@ -915,6 +930,22 @@ const removeChangeScheduleField = (i) => {
   );
 
   
+  // ✅ 가용포인트 초기 동기화: 총포인트와 같지 않은 문서에만 적용
+ // useEffect(() => {
+  //  students.forEach(async (stu) => {
+      // 각 필드별 포인트 합계 계산
+   //   const total = pointFields.reduce(
+    //    (sum, key) => sum + (pointsData[stu.id]?.[key] || 0),
+     //   0
+     // );
+      // 가용포인트가 다르면 Firestore 에 업데이트
+     // if (stu.availablePoints !== total) {
+      //  await updateDoc(doc(db, "students", stu.id), { availablePoints: total });
+     //   console.log(`Synced availablePoints for ${stu.name}: ${total}`);
+    //  }
+   // });
+ // }, [students, pointsData]);
+
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-4">학원 관리자 앱</h1>
@@ -1007,20 +1038,20 @@ const removeChangeScheduleField = (i) => {
             <CardContent className="space-y-4">
               <h2 className="text-xl font-semibold">학생 등록</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Input
-                  placeholder="학생 이름"
-                  value={newStudent.name}
-                  onChange={e=>setNewStudent({...newStudent,name:e.target.value})}
+               <Input
+  placeholder="학생 이름"
+  value={newStudent.name}
+  onChange={e=>setNewStudent(prev => ({ ...prev, name: e.target.value }))}
                 />
-                <Input
-                  placeholder="생년월일"
-                  value={newStudent.birth}
-                  onChange={e=>setNewStudent({...newStudent,birth:e.target.value})}
+               <Input
+  placeholder="생년월일"
+  value={newStudent.birth}
+  onChange={e=>setNewStudent(prev => ({ ...prev, birth: e.target.value }))}
                 />
-                <Input
-                  placeholder="수업 시작일 (예: 2025-04-13)"
-                  value={newStudent.startDate}
-                  onChange={e=>setNewStudent({...newStudent,startDate:e.target.value})}
+              <Input
+  placeholder="수업 시작일 (예: 2025-04-13)"
+  value={newStudent.startDate}
+  onChange={e=>setNewStudent(prev => ({ ...prev, startDate: e.target.value }))}
                 />
 
 <Input
@@ -1030,10 +1061,11 @@ const removeChangeScheduleField = (i) => {
 />
 
 
-                <Input
-                  placeholder="학부모 전화번호"
-                  value={newStudent.parentPhone}
-                  onChange={e=>setNewStudent({...newStudent,parentPhone:e.target.value})}
+              <Input
+  placeholder="학부모 전화번호"
+  value={newStudent.parentPhone}
+  onChange={e=>setNewStudent(prev => ({ ...prev, parentPhone: e.target.value }))}
+
                 />
                 {newStudent.schedules.map((s,i)=>(
                   <div className="flex gap-2 items-center" key={i}>
@@ -1377,35 +1409,49 @@ const removeChangeScheduleField = (i) => {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>번호</TableHead>               {/* ← 추가 */}
                 <TableHead>책 이름</TableHead>
                 <TableHead>학년</TableHead>
                 <TableHead>완료일</TableHead>
-                <TableHead>삭제</TableHead>
+                <TableHead>관리</TableHead>            {/* ← 삭제/수정 합침 */}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {books.filter(b => b.studentId === selectedStudent.id).map(book => (
-                <TableRow key={book.id}>
-                  <TableCell>{book.title}</TableCell>
-                  <TableCell>{book.grade}</TableCell>
-                  <TableCell>{book.completedDate}</TableCell>
-                  <TableCell>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      onClick={async () => {
-                        if (window.confirm('삭제하시겠습니까?')) {
-                          await deleteDoc(doc(db, 'books', book.id));
-                        }
-                      }}
-                    >
-                      삭제
-                    </Button>
-                  </TableCell>
-                  
-
-                </TableRow>
-              ))}
+              {/** 2) 완료일 내림차순 정렬 & 3) 번호 표시 **/}
+              {books
+                .filter(b => b.studentId === selectedStudent.id)
+                .sort((a, b) => b.completedDate.localeCompare(a.completedDate))
+                .map((book, idx) => (
+                  <TableRow key={book.id}>
+                    <TableCell>{idx + 1}</TableCell>    {/* ← 번호 */}
+                    <TableCell>{book.title}</TableCell>
+                    <TableCell>{book.grade}</TableCell>
+                    <TableCell>{book.completedDate}</TableCell>
+                    <TableCell className="flex gap-1">
+                      {/* camelCase로 onClick 속성 수정 */}
+                      <Button
+                        size="sm"
+                        className="px-2 py-1 text-xs"
+                        variant="outline"
+                        onClick={() => handleEditBook(book)}
+                      >
+                        수정
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="px-2 py-1 text-xs"
+                        variant="destructive"
+                        onClick={async () => {
+                          if (window.confirm('삭제하시겠습니까?')) {
+                            await deleteDoc(doc(db, 'books', book.id));
+                          }
+                        }}
+                      >
+                        삭제
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
               {books.filter(b => b.studentId === selectedStudent.id).length === 0 && (
                 <TableRow>
                   <TableCell colSpan={4} className="text-center text-gray-500">
@@ -1798,8 +1844,12 @@ const removeChangeScheduleField = (i) => {
        <TabsContent value="notices">
   <Card>
     <CardContent className="space-y-4">
-      <h2 className="text-xl font-semibold">공지사항 추가</h2>
+        {/* 🔧 여기에 모드 안내 문구를 추가 */}
+     <h2 className="text-xl font-semibold">
+       {selectedNotice ? '🔧 공지사항 수정' : '📝 공지사항 추가'}
+     </h2>
       <div className="flex flex-col gap-4">
+               
         <Input
           placeholder="공지사항 제목"
           value={noticeTitle}
@@ -1810,19 +1860,39 @@ const removeChangeScheduleField = (i) => {
           value={noticeDate}
           onChange={(e) => setNoticeDate(e.target.value)}
         />
-        <textarea
-        placeholder="공지사항 내용"
-         value={noticeContent}
-         onChange={(e) => setNoticeContent(e.target.value)}
-         rows={10}                      // 원하는 높이에 맞춰 조정
-         className="w-full h-32         // 가로는 100%, 세로 고정 높이
-           border rounded p-2           // 테두리, 둥근 모서리, 안쪽 여백
-           resize-y"                    // 세로 방향으로만 크기 조절 가능
-       />
+ </div>
+
+        {/* 리치 에디터 ReactQuill */}
+         <div className="mt-2">
+ <ReactQuill
+   theme="snow"
+   value={noticeContent}
+     onChange={setNoticeContent}
+  
+   modules={{
+     toolbar: [
+       [{ header: [1, 2, 3, false] }],
+       ['bold', 'italic', 'underline', 'strike'],
+       [{ color: [] }, { background: [] }],
+       [{ align: [] }],
+       ['link', 'image'],
+       ['clean']
+     ]
+   }}
+   formats={[
+     'header', 'bold', 'italic', 'underline', 'strike',
+     'color', 'background', 'align',
+     'link', 'image'
+   ]}
+   className="w-full h-48"  /* 높이는 필요에 맞게 조절 */
+ />
+ </div>
+
+   <div className="relative z-10 mt-2">
         <Button size="sm" className="px-2 py-1 text-xs" onClick={selectedNotice ? handleUpdateNotice : handleAddNotice}>
           {selectedNotice ? '수정하기' : '공지사항 추가'}
         </Button>
-      </div>
+      </div>  
 
       {/* 공지사항 목록 표시 */}
       <h2 className="text-xl font-semibold mt-4">공지사항 목록</h2>
@@ -2202,6 +2272,7 @@ const removeChangeScheduleField = (i) => {
           <TableRow>
             <TableHead>학생 이름</TableHead>
             <TableHead>로그인 시간</TableHead>
+            <TableHead>삭제</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -2213,15 +2284,56 @@ const removeChangeScheduleField = (i) => {
             </TableRow>
           
           ) : (
-            loginLogs.map(log => (
+           // 페이지 단위로 자른 뒤 렌더링
+            loginLogs
+              .slice((currentPage - 1) * logsPerPage, currentPage * logsPerPage)
+              .map(log => (
               <TableRow key={log.id}>
                 <TableCell>{log.studentName}</TableCell>
-                <TableCell>{log.loginTime?.replace("T", " ").slice(0, 19)}</TableCell>
+                 <TableCell>
+                  {log.loginTime
+                    ? new Date(log.loginTime)
+                        .toLocaleString('ko-KR', { hour12: false })
+                    : ''}
+                </TableCell>
+                <TableCell>
+                  <Button
+                    size="xs"
+                   variant="destructive"
+                    onClick={() => handleDeleteLog(log.id)}
+                  >
+                    삭제
+                  </Button>
+                </TableCell>
               </TableRow>
             ))
           )}
         </TableBody>
       </Table>
+
+ {/* ─── 페이지네이션 컨트롤 ─── */}
+      {loginLogs.length > logsPerPage && (
+        <div className="flex justify-center gap-2 mt-2">
+          <Button
+            size="sm"
+            disabled={currentPage === 1}
+            onClick={() => setCurrentPage(p => p - 1)}
+          >
+            이전
+          </Button>
+          <span className="px-2">
+            페이지 {currentPage} / {Math.ceil(loginLogs.length / logsPerPage)}
+          </span>
+          <Button
+            size="sm"
+            disabled={currentPage === Math.ceil(loginLogs.length / logsPerPage)}
+            onClick={() => setCurrentPage(p => p + 1)}
+          >
+            다음
+          </Button>
+        </div>
+      )}
+
     </CardContent>
   </Card>
 </TabsContent>

@@ -12,6 +12,8 @@ export default function StudentCalendarModal({
   attendance, attendanceDate, holidays = [],
     scheduleChanges = [] // 🔥 추가
 }) {
+    // 📌 탭 모드를 React state 로 관리
+  const [panelType, setPanelType] = useState('editStudent'); 
  // 🔥 changeData 선언을 props 사용 직후로 이동
   const [changeData, setChangeData] = useState([]);
 
@@ -58,35 +60,40 @@ const getActiveScheduleForDate = (dateStr) => {
    customAttendance = attendance,
    currentRoutineNumber,
    shouldSave = false,
-   source = 'editStudent'
+   source = 'editStudent' // 'changeSchedule'일 때만 저장 실행
  ) => {
 
 
 
+ let rawAll;
+    if (source === 'changeSchedule') {
+      // ▶︎ 수업변경 탭일 때만, 날짜 기준으로 before/after 합치기
+      const applicableChange = changeData
+        .filter(c => c.effectiveDate <= attendanceDate)
+        .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate))[0] || null;
+      const changeDate = applicableChange?.effectiveDate || null;
 
-// 🔥 스케줄 변경 구간 분리 생성
-  const changeDate = changeData.length > 0 ? changeData[0].effectiveDate : null;
+      const prevDays = applicableChange?.prevSchedules
+        ? applicableChange.prevSchedules.map(s => s.day)
+        : student.schedules.map(s => s.day);
+      const beforeAll = changeDate
+        ? generateScheduleWithRollovers(student.startDate, prevDays, 365, holidays)
+            .filter(d => d.date < changeDate)
+        : [];
 
-  // 1) 변경 전(rawBefore): startDate부터 changeDate 직전까지
-  const prevDays = changeData.length > 0 && changeData[0].prevSchedules
-    ? changeData[0].prevSchedules.map(s => s.day)
-    : student.schedules.map(s => s.day);
-  const beforeAll = changeDate
-    ? generateScheduleWithRollovers(student.startDate, prevDays, 365, holidays) // 넉넉히 많이 뽑아서
-        .filter(d => d.date < changeDate)
-    : []; 
+      const afterDays = applicableChange?.schedules
+        ? applicableChange.schedules.map(s => s.day)
+        : student.schedules.map(s => s.day);
+      const afterAll = changeDate
+        ? generateScheduleWithRollovers(changeDate, afterDays, 365, holidays)
+        : generateScheduleWithRollovers(student.startDate, afterDays, 365, holidays);
 
-  // 2) 변경 후(rawAfter): changeDate부터 충분히
-  const afterDays = changeData.length > 0
-    ? changeData[0].schedules.map(s => s.day)
-    : student.schedules.map(s => s.day);
-  const afterAll = changeDate
-    ? generateScheduleWithRollovers(changeDate, afterDays, 365, holidays)
-    : generateScheduleWithRollovers(student.startDate, afterDays, 365, holidays);
-
-  // 3) 합치기(rawCombined)
-  const rawAll = [...beforeAll, ...afterAll];
-
+      rawAll = [...beforeAll, ...afterAll];
+    } else {
+      // ◀︎ 그 외: 무조건 처음 등록된 루틴(원본 스케줄)만
+      const days = student.schedules.map(s => s.day);
+      rawAll = generateScheduleWithRollovers(student.startDate, days, 365, holidays);
+    }
 
 const raw = rawAll.filter((r) => {
   const rDate = r.date;
@@ -179,11 +186,12 @@ const raw = rawAll.filter((r) => {
 
 const routineDoc = await getDoc(doc(db, 'routines', student.id));
  const existingLessons = routineDoc.exists() ? routineDoc.data().lessons : [];
- const applicableChange = scheduleChanges
-   ?.filter(c => c.studentId === student.id && c.effectiveDate <= today)
-   ?.sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate))[0];
+   // 📝 저장할 때도, 오늘(today) 기준으로 마지막 변경만 덮어쓰기
+  const applicableChangeToSave = scheduleChanges
+    .filter(c => c.studentId === student.id && c.effectiveDate <= today)
+    .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate))[0] || null;
+  const changeStartDate = applicableChangeToSave?.effectiveDate || null;
 
- const changeStartDate = applicableChange?.effectiveDate || null;
 
  // 🔥 변경된 날짜 이후만 덮어쓰기, 이전은 유지
  const mergedLessons = changeStartDate
@@ -204,7 +212,7 @@ const routineDoc = await getDoc(doc(db, 'routines', student.id));
 };
 useEffect(() => {
   const routineNum = (student?.startRoutine || 1) + currentCycle;
-  const panelType = document.body.getAttribute('data-panel') || 'editStudent'; // 'changeSchedule'이면 그에 맞게 호출됨
+  // 🛠️ BODY 속성 대신 React state 사용
   rebuildLessons(attendance, routineNum, false, panelType);
 }, [student, attendanceDate, holidays, currentCycle]);
 
@@ -269,7 +277,8 @@ const nextDates = generateScheduleWithRollovers(date, days, 10, holidays);
     if (!newAttendance[date]) newAttendance[date] = {};
     newAttendance[date][student.name] = { status: newStatus, time };
     const routineNum = (student?.startRoutine || 1) + currentCycle;
-    await rebuildLessons(newAttendance, routineNum, false);
+    // 🛠️ 여기에도 panelType을 source로 넘겨줘야 원본 스케줄/변경 스케줄 로직이 구분됩니다
+    await rebuildLessons(newAttendance, routineNum, false, panelType);
 
     if (onRefreshData) {
       await onRefreshData();
@@ -316,14 +325,12 @@ const nextDates = generateScheduleWithRollovers(date, days, 10, holidays);
 useEffect(() => {
   const unsubAttendance = onSnapshot(collection(db, 'attendance'), () => {
     const routineNum = (student?.startRoutine || 1) + currentCycle;
-const panelType = document.body.getAttribute('data-panel') || 'editStudent';
-    rebuildLessons(attendance, routineNum, true, panelType);
+ rebuildLessons(attendance, routineNum, true, panelType);
   });
 
   const unsubMakeups = onSnapshot(collection(db, 'makeups'), () => {
     const routineNum = (student?.startRoutine || 1) + currentCycle;
-const panelType = document.body.getAttribute('data-panel') || 'editStudent';
-    rebuildLessons(attendance, routineNum, true, panelType);
+ rebuildLessons(attendance, routineNum, true, panelType);
   });
 
   return () => {
