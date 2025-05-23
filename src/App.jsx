@@ -17,7 +17,7 @@ import Holidays from 'date-holidays';
 import { increment } from "firebase/firestore";
  import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';  // 상단에 추가
 import { setDoc } from 'firebase/firestore';
-
+import { getDoc } from 'firebase/firestore';
 
 
  // ─── 공지사항 HTML → 텍스트 변환 유틸 함수 ───
