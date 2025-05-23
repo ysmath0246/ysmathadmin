@@ -16,6 +16,8 @@ import StudentCalendarModal from './StudentCalendarModal';
 import Holidays from 'date-holidays';
 import { increment } from "firebase/firestore";
  import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';  // 상단에 추가
+import { setDoc } from 'firebase/firestore';
+
 
 
  // ─── 공지사항 HTML → 텍스트 변환 유틸 함수 ───
@@ -159,6 +161,27 @@ const [bookCompletedDate, setBookCompletedDate] = useState(new Date().toISOStrin
   const [selectedStudent, setSelectedStudent] = useState(null);
 
 const pointFields = ["출석", "숙제", "수업태도", "시험", "문제집완료"];
+// ─── 고등부 수업현황 관련 state ───
+const [selectedHighStudent, setSelectedHighStudent] = useState(null);
+const [highAttendanceDates, setHighAttendanceDates] = useState([]);
+const [newHighDate, setNewHighDate] = useState(() => new Date().toISOString().slice(0,10));       // YYYY-MM-DD
+const [highMonth, setHighMonth] = useState(() => new Date().toISOString().slice(0,7));            // YYYY-MM
+const [sessionPageIndex, setSessionPageIndex] = useState(0);
+
+
+
+useEffect(() => {
+  const unsub = onSnapshot(
+    collection(db, 'high-attendance'),
+    qs => {
+      const arr = qs.docs
+        .map(d => ({ id: d.id, data: d.data() }))
+        .sort((a, b) => b.id.localeCompare(a.id));
+      setHighAttendanceDates(arr);
+    }
+  );
+  return () => unsub();
+}, []);
 
 
 useEffect(() => {
@@ -485,6 +508,38 @@ const enrichedStudents = useMemo(() => {
     });
     return map;
   }, [sortedStudentsLimited]);
+
+
+const handleAddHighDate = async () => {
+  if (!selectedHighStudent) return alert('학생을 선택하세요.');
+  const dateRef = doc(db, 'high-attendance', newHighDate);
+  const attendanceRecord = {
+    status: '출석',
+    time: new Date().toLocaleTimeString('ko-KR', {
+      hour: '2-digit', minute: '2-digit'
+    })
+  };
+  try {
+    // 이미 있는 문서면 필드만 덮어쓰기
+    await updateDoc(dateRef, {
+      [selectedHighStudent.name]: attendanceRecord
+    });
+  } catch {
+    // 문서가 없으면 새로 만들기
+    await setDoc(dateRef, {
+      [selectedHighStudent.name]: attendanceRecord
+    });
+  }
+};
+
+const handleDeleteHighDate = async (dateId) => {
+  if (!selectedHighStudent) return;
+  const dateRef = doc(db, 'high-attendance', dateId);
+  await updateDoc(dateRef, {
+    [selectedHighStudent.name]: deleteField()
+  });
+};
+
 
  // 공지사항 추가 핸들러
   const handleAddNotice = async () => {
@@ -962,6 +1017,7 @@ const removeChangeScheduleField = (i) => {
          <TabsTrigger value="makeup">보강관리</TabsTrigger>
            <TabsTrigger value="high">고등부 관리</TabsTrigger>
             <TabsTrigger value="high-payments">고등부 결제</TabsTrigger>
+             <TabsTrigger value="high-class-status">수업현황</TabsTrigger>
             <TabsTrigger value="login">로그인기록</TabsTrigger>
 
 
@@ -2263,6 +2319,166 @@ const removeChangeScheduleField = (i) => {
           )}
         </div>
       </TabsContent>
+<TabsContent value="high-class-status">
+  <div className="flex gap-6">
+    {/* ─── 왼쪽: 고등부 학생 선택 리스트 ─── */}
+    <aside className="w-48 space-y-2">
+      {highStudents.map(s => (
+        <Button
+          key={s.id}
+          variant={selectedHighStudent?.id === s.id ? 'primary' : 'outline'}
+          className="w-full text-left"
+          onClick={() => {
+            setSelectedHighStudent(s);
+            setSessionPageIndex(0);
+            setHighMonth(new Date().toISOString().slice(0,7));
+          }}
+        >
+          {s.name}
+        </Button>
+      ))}
+    </aside>
+
+    {/* ─── 오른쪽: 선택된 학생 수업현황 ─── */}
+    <section className="flex-1 space-y-4">
+      {!selectedHighStudent ? (
+        <p className="text-gray-500">학생을 선택하세요.</p>
+      ) : (
+        <>
+          <h2 className="text-xl font-semibold">
+            {selectedHighStudent.name} 수업현황
+          </h2>
+
+          {/* 날짜 추가 UI */}
+          <div className="flex flex-wrap gap-2 items-center">
+            <Input
+              type="month"
+              label="연·월"
+              value={highMonth}
+              onChange={e => setHighMonth(e.target.value)}
+            />
+            <Input
+              type="date"
+              label="새 날짜"
+              value={newHighDate}
+              onChange={e => setNewHighDate(e.target.value)}
+            />
+            <Button size="sm" onClick={handleAddHighDate}>
+              날짜 추가
+            </Button>
+          </div>
+
+          {/* 페이징 네비게이션 */}
+          {selectedHighStudent.type === '월제' ? (
+            <div className="flex gap-2 items-center">
+              <Button size="xs" onClick={() => {
+                const [y,m] = highMonth.split('-').map(Number);
+                const prev = new Date(y, m-2, 1);
+                setHighMonth(`${prev.getFullYear()}-${String(prev.getMonth()+1).padStart(2,'0')}`);
+              }}>◀ 이전월</Button>
+              <span className="font-medium">{highMonth}</span>
+              <Button size="xs" onClick={() => {
+                const [y,m] = highMonth.split('-').map(Number);
+                const next = new Date(y, m, 1);
+                setHighMonth(`${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,'0')}`);
+              }}>다음월 ▶</Button>
+            </div>
+          ) : (
+            <div className="flex gap-2 items-center">
+              <Button
+                size="xs"
+                disabled={sessionPageIndex === 0}
+                onClick={() => setSessionPageIndex(i => i - 1)}
+              >
+                ◀ 이전
+              </Button>
+              <span className="font-medium">
+                {sessionPageIndex + 1} / {Math.ceil(
+                  highAttendanceDates
+                    .filter(d => d.data[selectedHighStudent.name])
+                    .length / 8
+                )}
+              </span>
+              <Button
+                size="xs"
+                disabled={
+                  sessionPageIndex >=
+                  Math.ceil(
+                    highAttendanceDates.filter(d => d.data[selectedHighStudent.name]).length / 8
+                  ) - 1
+                }
+                onClick={() => setSessionPageIndex(i => i + 1)}
+              >
+                다음 ▶
+              </Button>
+            </div>
+          )}
+
+          {/* 날짜 목록 테이블 */}
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>날짜</TableHead>
+                <TableHead>삭제</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(() => {
+                // 1) 해당 학생에게 출석 기록이 있는 날짜만 필터
+                const ownDates = highAttendanceDates
+                  .filter(d => d.data[selectedHighStudent.name]);
+
+                // 2) 월제인 경우 월별, 횟수제인 경우 페이징
+                const filtered = selectedHighStudent.type === '월제'
+                  ? ownDates.filter(d => d.id.startsWith(highMonth))
+                  : ownDates.slice(
+                      sessionPageIndex * 8,
+                      sessionPageIndex * 8 + 8
+                    );
+
+                if (filtered.length === 0) {
+                  return (
+                    <TableRow>
+                      <TableCell colSpan={2} className="text-center text-gray-500">
+                        표시할 날짜가 없습니다.
+                      </TableCell>
+                    </TableRow>
+                  );
+                }
+
+                return filtered.map(d => (
+                  <TableRow key={d.id}>
+                    <TableCell>{d.id}</TableCell>
+                    <TableCell>
+                      <Button
+                        size="xs"
+                        variant="destructive"
+                        onClick={() => handleDeleteHighDate(d.id)}
+                      >
+                        삭제
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ));
+              })()}
+            </TableBody>
+          </Table>
+        </>
+      )}
+    </section>
+  </div>
+</TabsContent>
+
+
+
+
+
+
+
+
+
+
+
 <TabsContent value="login">
   <Card>
     <CardContent>
@@ -2337,6 +2553,15 @@ const removeChangeScheduleField = (i) => {
     </CardContent>
   </Card>
 </TabsContent>
+
+
+
+
+
+
+
+
+
 
       </Tabs>
 
