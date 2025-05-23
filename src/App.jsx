@@ -168,7 +168,9 @@ const [newHighDate, setNewHighDate] = useState(() => new Date().toISOString().sl
 const [highMonth, setHighMonth] = useState(() => new Date().toISOString().slice(0,7));            // YYYY-MM
 const [sessionPageIndex, setSessionPageIndex] = useState(0);
 
-
+ // 학생 목록 페이지네이션
+ const [studentPage, setStudentPage] = useState(1);
+ const studentsPerPage = 8;
 
 useEffect(() => {
   const unsub = onSnapshot(
@@ -799,7 +801,12 @@ const scheduledStudentsForDate = enrichedStudents.filter(s => {
     .filter(s => s.name.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => a.name.localeCompare(b.name));
 }, [enrichedStudents, search]);
-
+ // ─── 페이지네이션된 학생 목록 계산 ───
+ const totalStudentPages = Math.ceil(filteredStudents.length / studentsPerPage);
+ const paginatedStudents = filteredStudents.slice(
+   (studentPage - 1) * studentsPerPage,
+   studentPage * studentsPerPage
+ );
 const recentRepliesInfo = useMemo(() => {
   const now = new Date();
   const sevenDaysAgo = new Date(now);
@@ -1163,6 +1170,25 @@ const removeChangeScheduleField = (i) => {
                     value={search}
                     onChange={e=>setSearch(e.target.value)}
                   />
+                   <div className="flex justify-between items-center mt-2">
+   <Button
+     size="sm"
+     disabled={studentPage === 1}
+     onClick={() => setStudentPage(p => Math.max(p - 1, 1))}
+   >
+     이전
+   </Button>
+   <span className="text-sm">
+     {studentPage} / {totalStudentPages || 1}
+   </span>
+   <Button
+     size="sm"
+     disabled={studentPage === totalStudentPages}
+     onClick={() => setStudentPage(p => Math.min(p + 1, totalStudentPages))}
+   >
+     다음
+   </Button>
+ </div>
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -1177,7 +1203,7 @@ const removeChangeScheduleField = (i) => {
 
 
                     <TableBody>
-      {filteredStudents.map(student => (
+      {paginatedStudents.map(student => (
         <TableRow key={student.id}>
           <TableCell className="whitespace-nowrap">
  <span
