@@ -162,7 +162,7 @@ const raw = rawAll.filter((r) => {
   const sorted = merged.sort((a, b) => a.date.localeCompare(b.date));
   setLessons(sorted);
 
-  if (shouldSave) {
+  if (shouldSave && source === 'changeSchedule') {
     const reindexedForSave = [];
     let routineNumber = currentRoutineNumber || student.startRoutine || 1;
     let count = 1;
@@ -323,21 +323,23 @@ const nextDates = generateScheduleWithRollovers(date, days, 10, holidays);
     alert('수업 일정이 저장되었습니다.');
   };
 useEffect(() => {
-  const unsubAttendance = onSnapshot(collection(db, 'attendance'), () => {
-    const routineNum = (student?.startRoutine || 1) + currentCycle;
- rebuildLessons(attendance, routineNum, true, panelType);
-  });
+   // ➕ changeSchedule 패널일 때만 true
+   const shouldSave = panelType === 'changeSchedule';
+   const unsubAttendance = onSnapshot(collection(db, 'attendance'), () => {
+     const routineNum = (student?.startRoutine || 1) + currentCycle;
+     rebuildLessons(attendance, routineNum, shouldSave, panelType);
+   });
+   const unsubMakeups = onSnapshot(collection(db, 'makeups'), () => {
+     const routineNum = (student?.startRoutine || 1) + currentCycle;
+     rebuildLessons(attendance, routineNum, shouldSave, panelType);
+   });
 
-  const unsubMakeups = onSnapshot(collection(db, 'makeups'), () => {
-    const routineNum = (student?.startRoutine || 1) + currentCycle;
- rebuildLessons(attendance, routineNum, true, panelType);
-  });
+   return () => {
+     unsubAttendance();
+     unsubMakeups();
+   };
+ }, [student.id, attendance, currentCycle, panelType]);
 
-  return () => {
-    unsubAttendance();
-    unsubMakeups();
-  };
-}, [student.id, attendance, currentCycle]);
  // ✅ 외부에서 rebuildLessons 접근 가능하게 expose
  useEffect(() => {
    if (typeof window !== 'undefined') {
