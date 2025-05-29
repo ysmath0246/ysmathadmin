@@ -178,7 +178,8 @@ useEffect(() => {
     qs => {
       const arr = qs.docs
         .map(d => ({ id: d.id, data: d.data() }))
-        .sort((a, b) => b.id.localeCompare(a.id));
+        .sort((a, b) => a.id.localeCompare(b.id));
+       setHighAttendanceDates(arr);
       setHighAttendanceDates(arr);
     }
   );
@@ -2472,10 +2473,12 @@ const removeChangeScheduleField = (i) => {
                   );
                 }
 
-                return filtered.map(d => (
-                  <TableRow key={d.id}>
-                    <TableCell>{d.id}</TableCell>
-                    <TableCell>
+               return filtered.map((d, index) => (
+                 <TableRow key={d.id}>
+                  <TableCell>
+    {index + 1}. {d.id}
+  </TableCell>
+                  <TableCell>
                       <Button
                         size="xs"
                         variant="destructive"
