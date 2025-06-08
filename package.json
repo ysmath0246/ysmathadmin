@@ -12,6 +12,7 @@
     "date-holidays": "^3.24.2",
     "file-saver": "^2.0.5",
     "firebase": "^11.6.0",
+    "firebase-admin": "^13.4.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-quill": "^2.0.0",

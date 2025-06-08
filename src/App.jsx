@@ -225,6 +225,18 @@ const adjustPoint = async (student, field, delta) => {
   }
 };
 
+// ✅ 가용포인트 증감 함수
+const adjustAvailable = async (student, delta) => {
+  try {
+    await updateDoc(
+      doc(db, "students", student.id),
+      { availablePoints: increment(delta) }
+    );
+  } catch (error) {
+    console.error("가용포인트 저장 실패:", error);
+    alert("가용포인트 저장 오류");
+  }
+};
 
 
 // ✅ 총 포인트 계산 함수
@@ -1801,6 +1813,7 @@ const removeChangeScheduleField = (i) => {
             {pointFields.map(field => (
               <TableHead key={field}>{field}</TableHead>
             ))}
+             <TableHead>가용 조정</TableHead>
             <TableHead>총합 / 가용</TableHead>
           </TableRow>
         </TableHeader>
@@ -1819,6 +1832,15 @@ const removeChangeScheduleField = (i) => {
                     </div>
                   </TableCell>
                 ))}
+
+  <TableCell>
+     <div className="flex items-center gap-2">
+       <Button size="xs" onClick={() => adjustAvailable(s, +1)}>+1</Button>
+       <Button size="xs" variant="destructive" onClick={() => adjustAvailable(s, -1)}>-1</Button>
+     </div>
+   </TableCell>
+
+
                 <TableCell className="font-bold">
                   총 {totalPoints(pointsData[s.id]) || 0}점<br />
                   <span className="text-sm text-blue-600">가용 {s.availablePoints || 0}점</span><br />
