@@ -1876,7 +1876,7 @@ const removeChangeScheduleField = (i) => {
   )}
 </TabsContent>
 
-{/* 포인트상점점 */}
+{/* 포인트상점 */}
 <TabsContent value="shop">
   <Card>
     <CardContent className="space-y-4">
@@ -1893,35 +1893,32 @@ const removeChangeScheduleField = (i) => {
           value={newShopItem.point}
           onChange={e => setNewShopItem({ ...newShopItem, point: e.target.value })}
         />
-      <Input
-  placeholder="이미지 URL (예: https://firebasestorage.googleapis.com/...)"
-  value={newShopItem.imageUrl}
-  onChange={e => setNewShopItem({ ...newShopItem, imageUrl: e.target.value })}
-/>
-
-
-
+        <Input
+          placeholder="이미지 URL (사용 안 함)"
+          value={newShopItem.imageUrl}
+          onChange={e => setNewShopItem({ ...newShopItem, imageUrl: e.target.value })}
+        />
         <Button onClick={handleAddShopItem}>상품 등록</Button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {shopItems.map(item => (
-          <div key={item.id} className="border p-3 rounded shadow-sm">
-            {item.imageUrl && (
-              <img src={item.imageUrl} alt={item.name} className="w-full h-40 object-cover rounded mb-2" />
-            )}
-            <div className="text-lg font-bold">{item.name}</div>
-            <div className="text-sm text-gray-600">필요 포인트: {item.point}</div>
-            <div className="mt-2 flex gap-2">
-              <Button size="sm" onClick={() => handleEditShopItem(item)}>수정</Button>
-              <Button size="sm" variant="destructive" onClick={() => handleDeleteShopItem(item.id)}>삭제</Button>
+        {[...shopItems]
+          .sort((a, b) => a.point - b.point) // 낮은 포인트순 정렬
+          .map(item => (
+            <div key={item.id} className="border p-3 rounded shadow-sm">
+              <div className="text-lg font-bold">{item.name}</div>
+              <div className="text-sm text-gray-600">필요 포인트: {item.point}</div>
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" onClick={() => handleEditShopItem(item)}>수정</Button>
+                <Button size="sm" variant="destructive" onClick={() => handleDeleteShopItem(item.id)}>삭제</Button>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
       </div>
     </CardContent>
   </Card>
 </TabsContent>
+
 
 
        <TabsContent value="notices">
