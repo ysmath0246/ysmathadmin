@@ -102,9 +102,10 @@ function findNextScheduledDate(lastDateStr, scheduledDays) {
   const [attendance, setAttendance] = useState({});
   const [notices, setNotices] = useState([]); // 공지사항 목록을 저장할 상태
   const [holidays, setHolidays] = useState([]);
-  const [makeups, setMakeups] = useState([]);// 보강 리스트
   const [books, setBooks] = useState([]);
   const [comments, setComments] = useState([]);
+  const [answers, setAnswers] = useState([]);
+
   const [paymentMethods, setPaymentMethods] = useState([]); // ① 학부모 앱에서 선택된 결제방법 불러오기 (payment_methods 컬렉션)
   const [paymentCompleted, setPaymentCompleted] = useState([]);
   const [pointsData, setPointsData] = useState({});
@@ -116,7 +117,9 @@ function findNextScheduledDate(lastDateStr, scheduledDays) {
   const [search, setSearch] = useState('');
  // 📌 루틴 문서 가져오기 (※ 이 부분이 반드시 필요합니다)
  const [routines, setRoutines] = useState([]);
-
+const [searchName, setSearchName] = useState('')        // 검색어
+const [page, setPage] = useState(0)                      // 현재 페이지 인덱스 (0부터)
+const itemsPerPage = 10            
 
  // ─── 공지사항 관련 state ───
  const [noticeTitle, setNoticeTitle] = useState('');
@@ -237,7 +240,39 @@ const adjustAvailable = async (student, delta) => {
     alert("가용포인트 저장 오류");
   }
 };
+const paidList = useMemo(() => {
+  return routines
+    .map(r => {
+      const std = Object.values(r.students||{})[0]
+      const s1  = std?.sessions?.['1']
+      if (!s1) return null
+      return { studentId: std.studentId, name: std.name, date: s1.date, routineNumber: s1.routineNumber }
+    })
+    .filter(x => x)                              // null 제거
+    .filter(x => !searchName || x.name.includes(searchName))
+    .sort((a,b) => new Date(a.date) - new Date(b.date))
+}, [routines, searchName])
 
+const pageCount = Math.ceil(paidList.length / itemsPerPage)
+const paged     = paidList.slice(page * itemsPerPage, page * itemsPerPage + itemsPerPage)
+
+  // ─── 0) 이미 완료된 결제 레코드 로드 ───
+  const [completedMap, setCompletedMap] = useState({})
+   const [paymentsData, setPaymentsData] = useState([])
+ useEffect(() => {
+   (async () => {
+     const snap = await getDocs(collection(db, 'payments'))
+     setPaymentsData(snap.docs.map(d => d.data()))
+   })()
+ }, [])
+  useEffect(() => {
+    (async () => {
+      const snap = await getDocs(collection(db, 'payment_completed'))
+      const map = {}
+      snap.docs.forEach(d => { map[d.id] = d.data() })
+      setCompletedMap(map)
+    })()
+  }, [])
 
 // ✅ 총 포인트 계산 함수
 const totalPoints = (pointsObj) => {
@@ -380,10 +415,7 @@ const handleEditHighStudent = (s) => {
     return onSnapshot(ref, qs => setHolidays(qs.docs.map(doc => ({ id: doc.id, name: doc.data().name, date: doc.data().date }))));
   }, []);
 
-  useEffect(() => {
-    const ref = collection(db, 'makeups');
-    return onSnapshot(ref, qs => setMakeups(qs.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
-  }, []);
+ 
 
   useEffect(() => {
     const ref = collection(db, 'books');
@@ -395,7 +427,13 @@ const handleEditHighStudent = (s) => {
     return onSnapshot(ref, qs => setComments(qs.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
   }, []);
 
- 
+  // answer 구독 추가
+  useEffect(() => {
+    const ref = collection(db, 'answer');
+    return onSnapshot(ref, qs => setAnswers(qs.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
+  }, []);
+
+
  useEffect(() => {
   const ref = collection(db, 'payments');
   const unsub = onSnapshot(ref, qs =>
@@ -562,7 +600,7 @@ const handleDeleteHighDate = async (dateId) => {
       await addDoc(collection(db, 'notices'), {
         title: noticeTitle,
         date: noticeDate,
-         content: convertText(noticeContent),
+         content: noticeContent,
       });
       setNoticeTitle('');
       setNoticeDate('');
@@ -578,7 +616,7 @@ const handleDeleteHighDate = async (dateId) => {
      await updateDoc(doc(db, 'notices', selectedNotice.id), {
         title: noticeTitle,
         date: noticeDate,
-         content: convertText(noticeContent),
+         content: noticeContent,
       });
       alert('공지사항이 수정되었습니다!');
         // 수정 후 폼도 초기화
@@ -645,8 +683,17 @@ const handleEditNotice = (notice) => {
     try {
       const days = newStudent.schedules.map(s => s.day);
       const cnt = newStudent.schedules.length === 3 ? 12 : 8;
-      const lessons = generateScheduleWithRollovers(newStudent.startDate, days, cnt);
-      const data = { ...newStudent, lessons, startRoutine: newStudent.startRoutine || 1, active: true, pauseDate: null };
+    //  const lessons = generateScheduleWithRollovers(newStudent.startDate, days, cnt);
+      //const data = { ...newStudent, lessons, startRoutine: newStudent.startRoutine || 1, active: true, pauseDate: null };
+       // 더 이상 students 컬렉션에는 lessons 저장 안 함
+ const data = { 
+   ...newStudent, 
+   startRoutine: newStudent.startRoutine || 1,
+   active: true, 
+   pauseDate: null 
+ };
+      
+      
       let docId = '';
 
         if (editingId) {
@@ -663,29 +710,7 @@ const handleEditNotice = (notice) => {
         setStudents(s => [...s, { ...data, id: docRef.id }]);
         docId = docRef.id;
       }
- // ✅ 루틴 생성 및 Firestore 저장
-      const cycleSize = days.length * 4;
-      const rawLessons = generateScheduleWithRollovers(data.startDate, days, cycleSize * 10);
-      const filteredLessons = rawLessons.filter(l => !data.pauseDate || l.date < data.pauseDate);
-      const reindexed = [];
-      let routineNumber = data.startRoutine || 1;
-      let count = 1;
-      let nonSkipCount = 0;
-
-      for (let i = 0; i < filteredLessons.length; i++) {
-        const l = filteredLessons[i];
-        reindexed.push({ session: count, routineNumber, date: l.date, status: '미정', time: '-' });
-        count++;
-        nonSkipCount++;
-        if (nonSkipCount === cycleSize) { routineNumber++; count = 1; nonSkipCount = 0; }
-      }
-
-      await setDoc(doc(db, 'routines', docId), {
-        studentId: docId,
-        name: data.name,
-        lessons: reindexed,
-        updatedAt: new Date().toISOString()
-      });
+ 
 
       setNewStudent({ name: '', birth: '', startDate: '', schedules: [{ day: '', time: '' }], parentPhone: '' });
       console.log('학생 등록/수정 + 루틴 생성 완료');
@@ -720,8 +745,7 @@ const changePaymentsMonth = (delta) => {
 };
 
 
-  
-  
+
 
 
   const changeDate = delta => {
@@ -769,25 +793,38 @@ const scheduledStudentsForDate = enrichedStudents.filter(s => {
     const current = pointsData[studentId] || 0;
     await setDoc(ref, { points: current + 1 });
   };
+// App.jsx import에 deleteDoc,getDoc,setDoc 추가 확인:
+// import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 
-  const handlePaymentComplete = async (studentId, routineNumber) => {
-    const docId = `${studentId}_routine_${routineNumber}`;
-    const ref = doc(db, 'payment_completed', docId);
-    const snap = await getDoc(ref);
-    if (snap.exists()) {
-      await deleteDoc(ref);
-      console.log('✅ 결제완료 취소됨');
-    } else {
-      await setDoc(ref, {
-        studentId,
-        routineNumber,
-        paymentComplete: true,  // ✅ 필드명 일치
-        updatedAt: new Date().toISOString(),
-      });
-      
-      console.log('✅ 결제완료 저장됨');
-    }
-  };
+const handlePaymentComplete = async (studentId, routineNumber, studentName) => {
+  const docId = `${studentName}_${routineNumber}`;
+  const ref   = doc(db, 'payment_completed', docId);
+  const snap  = await getDoc(ref);
+
+  if (snap.exists()) {
+    // 취소
+    await deleteDoc(ref);
+    console.log('✅ 결제완료 취소됨');
+  } else {
+    // 저장
+    await setDoc(ref, {
+      studentId,
+      routineNumber,
+      paymentComplete: true,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+    console.log('✅ 결제완료 저장됨');
+  }
+
+  // UI 즉시 반영
+  setCompletedMap(cm => {
+    const m = { ...cm };
+    if (m[docId]) delete m[docId];
+    else m[docId] = { studentId, routineNumber, paymentComplete: true };
+    return m;
+  });
+};
+
   
   const downloadCSV = (rows, headers, filename) => {
     let csv = headers.join(',') + '\n';
@@ -821,21 +858,20 @@ const scheduledStudentsForDate = enrichedStudents.filter(s => {
    studentPage * studentsPerPage
  );
 const recentRepliesInfo = useMemo(() => {
-  const now = new Date();
-  const sevenDaysAgo = new Date(now);
-  sevenDaysAgo.setDate(now.getDate() - 7);
+   const now = new Date();
+   const sevenDaysAgo = new Date(now);
+   sevenDaysAgo.setDate(now.getDate() - 7);
 
-  const recent = comments.filter(c => {
-    if (!c.comment.startsWith('답변:')) return false;
-    const created = new Date(c.createdAt || c.date);
-    return created >= sevenDaysAgo;
-  });
+   // answer 컬렉션에서 7일 이내의 답변만 필터
+   const recent = answers.filter(a => {
+     const created = new Date(a.createdAt || a.date);
+     return created >= sevenDaysAgo;
+   });
 
-  // 학생별로 중복 제거
-  const uniqueNames = [...new Set(recent.map(r => r.name))];
-  return uniqueNames;
-}, [comments]);
-
+   // 학생 이름 중복 제거
+   const uniqueNames = [...new Set(recent.map(r => r.studentName || r.name))];
+   return uniqueNames;
+ }, [answers]);
   const updateSchedule = (i, k, v) => {
     const arr = [ ...newStudent.schedules ];
     arr[i][k] = v;
@@ -850,11 +886,14 @@ const recentRepliesInfo = useMemo(() => {
     setNewStudent(ns => ({ ...ns, schedules: arr }));
   };
 
-  const handleUpdateStudent = async stu => {
-    await updateDoc(doc(db, 'students', stu.id), stu);
-    setStudents(s => s.map(x => x.id === stu.id ? stu : x));
-  };
-
+ // const handleUpdateStudent = async stu => {
+  //  await updateDoc(doc(db, 'students', stu.id), stu);
+  //  setStudents(s => s.map(x => x.id === stu.id ? stu : x));
+  //};
+// 더 이상 사용하지 않음
+ const handleUpdateStudent = () => {
+   // no-op
+ };
   const handleEdit = s => {
       document.body.setAttribute("data-panel", "editStudent");  // ✅ 여기도 추가
     setNewStudent({
@@ -883,17 +922,6 @@ const recentRepliesInfo = useMemo(() => {
 
 
   
-  const handleCompleteMakeup = async (id) => {
-    if (window.confirm('이 보강을 완료 처리할까요?')) {
-      await updateDoc(doc(db, 'makeups', id), { completed: true });
-    }
-  };
-
-  const handleDeleteMakeup = async (id) => {
-    if (window.confirm('정말 이 보강 기록을 삭제하시겠습니까?')) {
-      await deleteDoc(doc(db, 'makeups', id));
-    }
-  };
 const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
   await addDoc(collection(db, 'schedule_changes'), {
     studentId: studentId, // ✅ 인자로 받은 studentId 사용
@@ -1034,7 +1062,7 @@ const removeChangeScheduleField = (i) => {
           <TabsTrigger value="shop">포인트상점</TabsTrigger>
           <TabsTrigger value="notices">공지사항관리</TabsTrigger>
          <TabsTrigger value="holidays">휴일관리</TabsTrigger>
-         <TabsTrigger value="makeup">보강관리</TabsTrigger>
+        
            <TabsTrigger value="high">고등부 관리</TabsTrigger>
             <TabsTrigger value="high-payments">고등부 결제</TabsTrigger>
              <TabsTrigger value="high-class-status">수업현황</TabsTrigger>
@@ -1445,22 +1473,21 @@ const removeChangeScheduleField = (i) => {
 )}
 
 
+{selectedPanel === 'calendar' ? (
+  <StudentCalendarModal
+    student={selectedStudent}
 
-      {selectedPanel === 'calendar' ? (
-        <StudentCalendarModal
-          student={selectedStudent}
-          onUpdateStudent={handleUpdateStudent}
-          onRefreshData={refreshAllData}
-          inline={true}
-          attendance={attendance}
-          attendanceDate={selectedDate}
-          holidays={[...holidays.map(h => h.date), ...publicHolidays]}
-          setMakeups={setMakeups}
-            scheduleChanges={scheduleChanges} 
-        />
-      ) : 
-      
-      selectedPanel === 'books' ? (
+     attendance={attendance}
+   attendanceDate={selectedDate}
+    onSaveSchedule={(newSchedules, effectiveDate) =>
+      handleScheduleChange(selectedStudent.id, newSchedules, effectiveDate)
+    }
+    onRefreshData={refreshAllData}
+    inline={true}
+    scheduleChanges={scheduleChanges}
+  />
+) : null}
+     { selectedPanel === 'books' ? (
         <div className="space-y-2">
           <Input
             placeholder="책 이름"
@@ -1599,12 +1626,13 @@ const removeChangeScheduleField = (i) => {
     <h3 className="text-md font-semibold mt-4">저장된 코멘트</h3>
     <ul className="space-y-4">
       {comments
-        .filter(c => c.studentId === selectedStudent.id && !c.comment.startsWith('답변:'))
+        .filter(c => c.studentId === selectedStudent.id)  // 원본 코멘트만
         .sort((a, b) => (b.date || b.createdAt).localeCompare(a.date || a.createdAt))
         .map(c => {
-          const replies = comments.filter(r =>
-            r.studentId === selectedStudent.id &&
-            r.parentId === c.id
+          // answer 컬렉션에서 해당 코멘트(parentId) 답변을 불러옴
+          const replies = answers.filter(a =>
+            a.studentId === selectedStudent.id &&
+            a.parentId === c.id
           );
 
           return (
@@ -1629,8 +1657,10 @@ const removeChangeScheduleField = (i) => {
 
               {replies.map(reply => (
                 <div key={reply.id} className="ml-4 mt-2 p-2 bg-gray-100 rounded">
-                  <div className="text-xs text-gray-500">답변 • {reply.date || reply.createdAt.slice(0, 10)}</div>
-                  <div className="text-sm text-gray-800">{reply.comment.replace('답변: ', '')}</div>
+                  <div className="text-xs text-gray-500">
+                    답변 • {reply.date || reply.createdAt.slice(0, 10)}
+                  </div>
+                  <div className="text-sm text-gray-800">{reply.comment}</div>
                 </div>
               ))}
             </li>
@@ -1674,40 +1704,26 @@ const removeChangeScheduleField = (i) => {
     <tbody>
       {calendarWeeks.map((week, weekIdx) => (
         <tr key={weekIdx}>
-          {week.map((day, dayIdx) => {
-            const fullDateKey = day
-              ? `${paymentsMonth}-${String(day).padStart(2, '0')}`
-              : null;
+        {/* … 기존 calendarWeeks.map 안에서 … */}
+{week.map((day, dayIdx) => {
+  const fullDateKey = day
+    ? `${paymentsMonth}-${String(day).padStart(2,'0')}`
+    : null;
 
-            return (
-              <td
-                key={dayIdx}
-                className={`border p-2 align-top h-24 ${fullDateKey === today ? 'bg-yellow-100' : ''}`}
-              >
-                {day && (
-                  <>
-                    {/* 날짜 숫자 */}
-                    <div className="font-bold mb-1">{day}</div>
+  return (
+    <td key={dayIdx} className={`border p-2 align-top h-24 ${fullDateKey===today?'bg-yellow-100':''}`}>
+      {day && (
+        <>
+          <div className="font-bold mb-1">{day}</div>
+          {(paymentSessions[fullDateKey]||[]).map((label, idx) => (
+            <div key={idx}>{label}</div>
+          ))}
+        </>
+      )}
+    </td>
+  );
+})}
 
-                    {/* 이름 + 결제상태 표시 */}
-                    {(paymentSessions[fullDateKey] || []).map((name, idx) => {
-                      const stu = students.find(s => s.name === name);
-                      const routineNum = calendarRoutineMap[`${fullDateKey}_${name}`];
-                      const isPaid = paymentCompleted.some(p => p.studentId === stu?.id && p.routineNumber === routineNum);
-                      return (
-                        <div key={`${name}-${idx}`}>
-                          {name}{' '}
-                          <span style={{ fontSize: '0.8em', color: isPaid ? 'green' : 'red' }}>
-                            ({isPaid ? '결제완료' : '미결제'})
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </>
-                )}
-              </td>
-            );
-          })}
         </tr>
       ))}
     </tbody>
@@ -1715,86 +1731,81 @@ const removeChangeScheduleField = (i) => {
 </TabsContent>
 
 
-
-    
- {/* 결제관리 */}
- <TabsContent value="paid">
-  <div className="flex items-center justify-between mb-4">
-    <h2 className="text-xl font-semibold">결제완료 관리</h2>
-    <div className="flex gap-2">
-      <Button size="sm" className="px-2 py-1 text-xs" onClick={() => setViewDate(d => {
-        const newDate = new Date(d);
-        newDate.setDate(newDate.getDate() - 7);
-        return newDate.toISOString().split('T')[0];
-      })}>◀ 이전</Button>
-      <span className="text-lg font-semibold">{viewDate}</span>
-      <Button size="sm" className="px-2 py-1 text-xs" onClick={() => setViewDate(d => {
-        const newDate = new Date(d);
-        newDate.setDate(newDate.getDate() + 7);
-        return newDate.toISOString().split('T')[0];
-      })}>다음 ▶</Button>
+{/* ─── 결제완료 탭 ─── */}
+<TabsContent value="paid">
+  {/* 검색 & 페이징 */}
+  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+    <Input
+      placeholder="학생 이름 검색"
+      value={searchName}
+      onChange={e => { setSearchName(e.target.value); setPage(0) }}
+      style={{ width: 200 }}
+    />
+    <div>
+      <Button size="xs" disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))} style={{ marginRight: 4 }}>
+        이전
+      </Button>
+      <Button size="xs" disabled={page >= pageCount - 1} onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}>
+        다음
+      </Button>
     </div>
   </div>
 
-  <Table>
-    <TableHeader>
-      <TableRow>
-        <TableHead>이름</TableHead>
-        <TableHead>루틴</TableHead>
-        <TableHead>수업시작일</TableHead>
-        <TableHead>결제방법</TableHead>
-        <TableHead>결제완료</TableHead>
-        <TableHead>결제알림</TableHead>
-      </TableRow>
-    </TableHeader>
-    <TableBody>
-    {sortedStudentsLimited.map(({ stu, lesson }, i) => {
-  const isCompleted = paymentCompleted.some(p => 
-    p.studentId === stu.id && p.routineNumber === lesson.routine
-  );
+  <Table striped highlightOnHover>
+    <thead>
+      <tr>
+        <th>학생_루틴번호</th>
+        <th>수업시작일</th>
+        <th>결제방법</th>
+        <th>결제완료</th>
+        <th>결제알림</th>
+      </tr>
+    </thead>
+    <tbody>
+      {paged.map(item => {
+        // docId를 studentName_routineNumber로
+        const docId = `${item.name}_${item.routineNumber}`;
+        const done  = Boolean(completedMap[docId]?.paymentComplete);
+        const method = paymentMethods.find(p =>
+          p.studentId === item.studentId && p.routineNumber === item.routineNumber
+        )?.paymentMethod || '-';
 
-  return (
-    <TableRow key={stu.id + '-' + i}>
-      <TableCell>{stu.name}</TableCell>
-      <TableCell>{lesson.routine}</TableCell>
-      <TableCell>{lesson.date}</TableCell>
-      <TableCell>
-        {
-          paymentMethods.find(p => 
-            p.studentId === stu.id && 
-            p.routineNumber === lesson.routine
-          )?.paymentMethod || '-'
-        }
-      </TableCell>
-      <TableCell>
-        <Button
-          size="sm"
-          className={`px-2 py-1 text-xs ${
-            isCompleted
-              ? 'bg-blue-500 text-white hover:bg-blue-600'
-              : 'bg-red-500 text-white hover:bg-red-600'
-          }`}
-          onClick={() => handlePaymentComplete(stu.id, lesson.routine)}
-        >
-          {isCompleted ? '완료됨' : '결제완료'}
-        </Button>
-      </TableCell>
-      <TableCell>
-        <Button variant="outline" disabled>추가기능 예정</Button>
-      </TableCell>
-    </TableRow>
-  );
-})}
-
-      {sortedStudentsLimited.length === 0 && (
-        <TableRow>
-          <TableCell colSpan={6} className="text-center text-gray-500">
-            해당 기간에 시작하는 수업이 없습니다.
-          </TableCell>
-        </TableRow>
-      )}
-    </TableBody>
+        return (
+          <tr key={docId}>
+            <td>{`${item.name}_${item.routineNumber}`}</td>
+            <td>{item.date}</td>
+            {/* ★ paymentsData에서 paymentMethod 찾아오기 ★ */}
+           <td>{
+             (paymentsData.find(p =>
+               p.studentId === item.studentId &&
+               p.routineNumber === item.routineNumber
+             )?.paymentMethod) || '-'
+           }</td>
+           <td>
+              <Button
+                size="sm"
+                color={done ? 'green' : 'blue'}
+                onClick={() => handlePaymentComplete(
+                  item.studentId,
+                  item.routineNumber,
+                  item.name   // studentName 전달
+                )}
+              >
+                {done ? '확인!' : '결제완료'}
+              </Button>
+            </td>
+            <td>
+              <Button size="sm" variant="outline" disabled>알림</Button>
+            </td>
+          </tr>
+        );
+      })}
+    </tbody>
   </Table>
+
+  <div style={{ textAlign: 'center', marginTop: 8 }}>
+    페이지 {page + 1} / {pageCount}
+  </div>
 </TabsContent>
 
 
@@ -2003,6 +2014,7 @@ const removeChangeScheduleField = (i) => {
           <TableRow>
             <TableHead>제목</TableHead>
             <TableHead>날짜</TableHead>
+            <TableHead>내용</TableHead>  
             <TableHead>수정</TableHead>
             <TableHead>삭제</TableHead>  
           </TableRow>
@@ -2012,6 +2024,12 @@ const removeChangeScheduleField = (i) => {
               <TableRow key={notice.id}>
                 <TableCell>{notice.title}</TableCell>
                 <TableCell>{notice.date}</TableCell>
+                 <TableCell>
+    <div
+      className="prose max-w-none whitespace-pre-wrap"
+      dangerouslySetInnerHTML={{ __html: notice.content }}
+    />
+  </TableCell>
                 <TableCell>
                   <Button size="sm" className="px-2 py-1 text-xs" onClick={() => handleEditNotice(notice)}>
                     수정
@@ -2100,136 +2118,6 @@ const removeChangeScheduleField = (i) => {
 </TabsContent>
 
 
-<TabsContent value="makeup">
-  <Card>
-    <CardContent className="space-y-4">
-      <h2 className="text-xl font-semibold mb-4">보강관리</h2>
-
-      {/* 미완료 보강 */}
-      {makeups.filter(m => !m.completed).length === 0 ? (
-        <div className="text-gray-500">현재 등록된 보강이 없습니다.</div>
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>이름</TableHead>
-              <TableHead>원래 수업일</TableHead> {/* 추가 */}
-              <TableHead>보강/클리닉 선택</TableHead>
-              <TableHead>보강 날짜</TableHead>
-              <TableHead>완료</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {makeups.filter(m => !m.completed).map((m, idx) => (
-              <TableRow key={idx}>
-                <TableCell>{m.name}</TableCell>
-                <TableCell>{m.sourceDate}</TableCell> {/* 추가 */}
-                <TableCell>
-                  <select
-                    value={m.type}
-                    onChange={e => {
-                      const updated = [...makeups];
-                      updated[idx].type = e.target.value;
-                      setMakeups(updated);
-                    }}
-                  >
-                    <option value="보강">보강</option>
-                    <option value="클리닉">클리닉</option>
-                  </select>
-                </TableCell>
-
-                
-                <TableCell>
-        <Input
-          type="date"
-          value={m.date}
-          onChange={async (e) => {
-            const newDate = e.target.value;
-            const updated = [...makeups];
-            updated[idx].date = newDate;
-            setMakeups(updated);
-
-            // ⭐ Firestore에도 즉시 저장
-            await updateDoc(doc(db, 'makeups', m.id), { date: newDate });
-          }}
-        />
-      </TableCell>
-                <TableCell>
-                  <Button size="sm" className="px-2 py-1 text-xs" onClick={() => handleCompleteMakeup(m.id)} variant="destructive">
-                    가능
-                  </Button>
-                  <Button size="sm" className="px-2 py-1 text-xs" onClick={() => handleDeleteMakeup(m.id)} variant="destructive">
-    삭제
-  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-
-      {/* 완료된 보강 목록 */}
-      <h3 className="text-lg font-semibold mt-8">완료된 보강</h3>
-      {makeups.filter(m => m.completed).length === 0 ? (
-        <div className="text-gray-400">완료된 보강이 없습니다.</div>
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>이름</TableHead>
-              <TableHead>원래 수업일</TableHead> {/* 추가 */}
-              <TableHead>보강/클리닉</TableHead>
-              <TableHead>보강 날짜</TableHead>
-              <TableHead>삭제</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {makeups
-  .filter(m => m.completed)
-  .sort((a, b) => b.date.localeCompare(a.date)) // ✅ 최신순으로 정렬 (최신 위, 과거 아래)
-  .map((m, idx) => (
-    <TableRow key={idx}>
-      <TableCell>{m.name}</TableCell>
-      <TableCell>{m.sourceDate}</TableCell>
-      <TableCell>{m.type}</TableCell>
-      <TableCell>{m.date}</TableCell>
-      <TableCell>
-        <Button
-          onClick={async () => {
-            if (window.confirm('이 보강을 다시 보강관리로 되돌릴까요?')) {
-              await updateDoc(doc(db, 'makeups', m.id), { completed: false });
-            }
-          }}
-          variant="default"
-        >
-          되돌리기
-        </Button>
-        <Button
-          onClick={async () => {
-            if (window.confirm('이 보강을 보강완료로 처리할까요?')) {
-              await updateDoc(doc(db, 'makeups', m.id), { status: '보강완료' });
-              alert('보강완료로 변경되었습니다!');
-            }
-          }}
-          style={{
-            backgroundColor: m.status === '보강완료' ? 'gray' : '',
-            color: m.status === '보강완료' ? 'white' : '',
-            borderColor: m.status === '보강완료' ? 'gray' : '',
-          }}
-          variant="outline"
-        >
-          보강완료
-        </Button>
-      </TableCell>
-    </TableRow>
-))}
-
-          </TableBody>
-        </Table>
-      )}
-    </CardContent>
-  </Card>
-</TabsContent>
    {/* 고등부 관리 탭 */}
         <TabsContent value="high">
       <div className="space-y-6">
