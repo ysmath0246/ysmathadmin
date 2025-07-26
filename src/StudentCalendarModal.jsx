@@ -271,8 +271,19 @@ useEffect(() => {
     const date = s.date
     const rec = attendanceData[date] || {}
     return (
-      <tr key={`${date}_${i}`}>
-        <td>{s.session}</td>
+      <tr key={`${s.date}_${i}`}>
+              {/* 이월일 때만 'X', 아니면 앞에 이월된 횟수만큼 뺀 숫자 */}
+              {(() => {
+                const rec = attendanceData[s.date] || {}
+                const isCarry = rec.status === 'carryover'
+                const carryCountBefore = savedSessions
+                  .slice(0, i)
+                  .reduce((cnt, ps) => {
+                    const pr = attendanceData[ps.date] || {}
+                    return cnt + (pr.status === 'carryover' ? 1 : 0)
+                  }, 0)
+                return isCarry ? 'X' : s.session - carryCountBefore
+              })()}
         <td>{date}</td>
         <td>
           {editing && !rec.time ? (
@@ -285,10 +296,13 @@ useEffect(() => {
               <option value="onTime">출석</option>
               <option value="absent">결석</option>
               <option value="late">지각</option>
+              <option value="makeup">보강</option>
+   <option value="carryover">이월</option>
             </select>
           ) : (
             <Text>
-              {{ onTime: '출석', absent: '결석', late: '지각', '': '미정' }[rec.status]}
+              {{ onTime: '출석', absent: '결석', late: '지각', makeup: '보강',
+  carryover: '이월', '': '미정' }[rec.status]}
             </Text>
           )}
         </td>

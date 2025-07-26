@@ -250,7 +250,7 @@ const paidList = useMemo(() => {
     })
     .filter(x => x)                              // null 제거
     .filter(x => !searchName || x.name.includes(searchName))
-    .sort((a,b) => new Date(a.date) - new Date(b.date))
+     .sort((a, b) => new Date(b.date) - new Date(a.date))
 }, [routines, searchName])
 
 const pageCount = Math.ceil(paidList.length / itemsPerPage)
@@ -412,8 +412,16 @@ const handleEditHighStudent = (s) => {
 
   useEffect(() => {
     const ref = collection(db, 'holidays');
-    return onSnapshot(ref, qs => setHolidays(qs.docs.map(doc => ({ id: doc.id, name: doc.data().name, date: doc.data().date }))));
-  }, []);
+return onSnapshot(ref, qs => {
+    const hols = qs.docs.map(doc => ({
+      id: doc.id,
+      name: doc.data().name,
+      date: doc.data().date
+    }));
+    // date 문자열('YYYY-MM-DD') 기준으로 내림차순 정렬
+    hols.sort((a, b) => b.date.localeCompare(a.date));
+    setHolidays(hols);
+  });  }, []);
 
  
 
@@ -697,6 +705,10 @@ const handleEditNotice = (notice) => {
       let docId = '';
 
         if (editingId) {
+  const studentRef = doc(db, 'students', editingId);
+  await updateDoc(studentRef, data);
+
+
         const hasScheduleChanges = scheduleChanges.some(c => c.studentId === editingId);
         if (hasScheduleChanges) {
           data.schedules = students.find(s => s.id === editingId)?.schedules || data.schedules;
