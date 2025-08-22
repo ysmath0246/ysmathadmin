@@ -1,5 +1,7 @@
 // src/StudentCalendarModal.jsx
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
+
+
 import {
   collection,
   doc,
@@ -20,8 +22,19 @@ import { DayPicker } from 'react-day-picker'
 import 'react-day-picker/dist/style.css'
 import { db } from './firebase.js'
 
-export default function StudentCalendarModal({ student, onRefreshData }) {
+export default function StudentCalendarModal({
+  student,
+  onRefreshData,
+  holidayDates = []      // ← App에서 내려줄 휴일(YYYY-MM-DD) 배열
+}) {
+  
   const stdId = student.id
+const holidaySet = useMemo(() => new Set(holidayDates), [holidayDates])
+ const fmt = (d) =>
+   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+     d.getDate()
+   ).padStart(2, '0')}`
+
 
   // ─── A) 새/수정 루틴 & 달력 ─────────────────────
   const [editing, setEditing] = useState(false)
@@ -234,7 +247,15 @@ useEffect(() => {
         selected={manualDates.map(d=>new Date(d))}
         onDayClick={handleDayClick}
         footer={`${manualDates.length}개 날짜 선택됨`}
-      />
+      modifiers={{
+     weekend: { dayOfWeek: [0, 6] },                 // 일(0), 토(6)
+     holiday: (date) => holidaySet.has(fmt(date)),   // 휴일관리 + 공휴일
+   }}
+   modifiersStyles={{
+     weekend: { color: 'red' },
+     holiday: { color: 'red' },
+   }}
+     />
 
       {/* C: 루틴 선택 & 수정 진입 */}
       <Text weight={500} mt="lg" mb="xs">저장된 루틴 선택</Text>

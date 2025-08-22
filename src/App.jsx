@@ -111,7 +111,6 @@ function findNextScheduledDate(lastDateStr, scheduledDays) {
   const [pointsData, setPointsData] = useState({});
 
   const [newStudent, setNewStudent] = useState({ name: '', birth: '', startDate: '', schedules: [{ day: '', time: '' }], parentPhone: '' });
-  const [changeStudent, setChangeStudent] = useState({ schedules: [], effectiveDate: '' });
 
   const [editingId, setEditingId] = useState(null);
   const [search, setSearch] = useState('');
@@ -484,21 +483,16 @@ return onSnapshot(ref, qs => {
 
 
   const userHolidayDates = useMemo(() => holidays.map(h => h.date), [holidays]);
-const [scheduleChanges, setScheduleChanges] = useState([]);
-  const today = new Date().toISOString().split('T')[0]; // "2025-04-18" 형태
+  // 사용자 휴일 + KR 공휴일(YYYY-MM-DD) 합치기
+  const allHolidaySet = useMemo(() => {
+    const s = new Set(userHolidayDates);
+    (publicHolidays || []).forEach(d => s.add(String(d).slice(0,10)));
+    return s;
+  }, [userHolidayDates]);
 
-const enrichedStudents = useMemo(() => {
-  return students.map(stu => {
-    const all = scheduleChanges.filter(c => c.studentId === stu.id);
-    const applicable = all.filter(c => c.effectiveDate <= today);  // 오늘 기준
-    applicable.sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate));
-    const latest = applicable[0];
-    return {
-      ...stu,
-      schedules: latest ? latest.schedules : stu.schedules  // 💡 스케줄 덮어쓰기
-    };
-  });
-}, [students, scheduleChanges]);
+const today = new Date().toISOString().split('T')[0]; // "2025-04-18" 형태
+
+const enrichedStudents = students;
 
 
   const sortedStudentsFull = useMemo(() => {
@@ -709,10 +703,6 @@ const handleEditNotice = (notice) => {
   await updateDoc(studentRef, data);
 
 
-        const hasScheduleChanges = scheduleChanges.some(c => c.studentId === editingId);
-        if (hasScheduleChanges) {
-          data.schedules = students.find(s => s.id === editingId)?.schedules || data.schedules;
-        }
         // 기존 data(=newStudent 기반)를 그대로 사용하여 업데이트
         setStudents(s => s.map(x => x.id === editingId ? { ...x, ...data } : x));
         docId = editingId;
@@ -771,30 +761,18 @@ const changePaymentsMonth = (delta) => {
   const selectedDay = dayMap[new Date(selectedDate).getDay()];
 
 
-useEffect(() => {
-  const ref = collection(db, 'schedule_changes');
-  return onSnapshot(ref, qs => {
-    const changes = qs.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .filter(c => c.studentId && c.schedules && c.effectiveDate);  // ✅ 유효한 문서만
-    setScheduleChanges(changes);
-  });
-}, []);
 
-const getScheduleForStudentOnDate = (studentId, dateStr) => {
-  const all = scheduleChanges.filter(c => c.studentId === studentId);
-  const applicable = all.filter(c => c.effectiveDate <= dateStr);
-  if (applicable.length === 0) return students.find(s => s.id === studentId)?.schedules || [];
-  applicable.sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate));
-  return applicable[0].schedules;
+const getScheduleForStudentOnDate = (studentId) => {
+  return students.find(s => s.id === studentId)?.schedules || [];
 };
 
 
 const scheduledStudentsForDate = enrichedStudents.filter(s => {
   if (s.active === false) return false;
   if (s.pauseDate && selectedDate >= s.pauseDate) return false;
-  const schedule = getScheduleForStudentOnDate(s.id, selectedDate);
-  return schedule.some(x => x.day === selectedDay);
+const schedule = getScheduleForStudentOnDate(s.id);
+
+return schedule.some(x => x.day === selectedDay);
 });
 
 
@@ -934,17 +912,6 @@ const recentRepliesInfo = useMemo(() => {
 
 
   
-const handleScheduleChange = async (studentId, newSchedules, effectiveDate) => {
-  await addDoc(collection(db, 'schedule_changes'), {
-    studentId: studentId, // ✅ 인자로 받은 studentId 사용
-    schedules: newSchedules, // ✅ 인자로 받은 newSchedules 사용
-    effectiveDate: effectiveDate, // ✅ 인자로 받은 effectiveDate 사용
-    createdAt: new Date().toISOString()
-  });
-
-  alert('수업 변경이 저장되었습니다. 루틴이 곧 반영됩니다.');
-};
-
 
 const [deductions, setDeductions] = useState([]);
 const [deductionModalStudent, setDeductionModalStudent] = useState(null);
@@ -1015,22 +982,14 @@ useEffect(() => {
     setPointLogs(list);
   });
 }, []);
+// ✅ 선택된 학생의 총 사용 포인트(차감 합계)
+const totalUsedForSelected = useMemo(() => {
+  if (!deductionModalStudent) return 0;
+  return pointLogs
+    .filter(d => d.studentId === deductionModalStudent.id)
+    .reduce((sum, d) => sum + (Number(d.point) || 0), 0);
+}, [pointLogs, deductionModalStudent]);
 
-const updateChangeSchedule = (i, k, v) => {
-  const arr = [...changeStudent.schedules];
-  arr[i][k] = v;
-  setChangeStudent(cs => ({ ...cs, schedules: arr }));
-};
-
-const addChangeScheduleField = () => {
-  setChangeStudent(cs => ({ ...cs, schedules: [...cs.schedules, { day: '', time: '' }] }));
-};
-
-const removeChangeScheduleField = (i) => {
-  const arr = [...changeStudent.schedules];
-  arr.splice(i, 1);
-  setChangeStudent(cs => ({ ...cs, schedules: arr }));
-};
 
 
 
@@ -1342,25 +1301,7 @@ const removeChangeScheduleField = (i) => {
 
       {/* 🔥 전환 버튼 */}
       <div className="flex gap-2 mb-2">
-    <Button
-  size="sm"
-  variant={selectedPanel === 'changeSchedule' ? 'default' : 'outline'}
-  onClick={() => {
-  setSelectedPanel('changeSchedule');
-  document.body.setAttribute('data-panel', 'changeSchedule'); // ✅ Source 구분도 함께 설정
-  setChangeStudent({
-    schedules: enrichedStudents.find(s => s.id === selectedStudent?.id)?.schedules || [{ day: '', time: '' }],
-    effectiveDate: ''
-  });
-}}
-
-
-
-
  
->
-  수업변경
-</Button>
 
 
         <Button
@@ -1386,117 +1327,17 @@ const removeChangeScheduleField = (i) => {
         </Button>
       </div>
 
-      {/* 🔥 선택된 패널에 따라 표시 */}
-{selectedPanel === 'changeSchedule' && (
-  <div className="space-y-4">
-
-    {/* 🔹 현재 입력 중인 새로운 스케줄 UI */}
-    <h3 className="text-md font-semibold">현재 수업 스케줄</h3>
-    {changeStudent.schedules.map((s, i) => (
-      <div key={i} className="flex gap-2 items-center">
-        <Input
-          placeholder="요일 (예: 월)"
-          value={s.day}
-          onChange={e => updateChangeSchedule(i, 'day', e.target.value)} // ✅ changeStudent용 업데이트 함수
-        />
-        <Input
-          placeholder="시간 (예: 15:00)"
-          value={s.time}
-          onChange={e => updateChangeSchedule(i, 'time', e.target.value)} // ✅ changeStudent용 업데이트 함수
-        />
-        <Button size="xs" variant="destructive" onClick={() => removeChangeScheduleField(i)}>
-          삭제
-        </Button>
-      </div>
-    ))}
-    <Button size="sm" className="px-2 py-1 text-xs" onClick={addChangeScheduleField}>+ 수업 추가</Button>
-
-    {/* 🔹 변경 적용 시작일 입력 */}
-    <div className="mt-4">
-      <Input
-        type="date"
-        value={changeStudent.effectiveDate || ''}
-        onChange={e => setChangeStudent(cs => ({ ...cs, effectiveDate: e.target.value }))}
-        placeholder="변경 시작일"
-      />
-    </div>
-
-    {/* 🔹 변경 저장 버튼 */}
-    <Button
-      size="sm"
-      onClick={async () => {
-        if (!changeStudent.effectiveDate) return alert('변경 시작일을 입력하세요!');
-        if (!selectedStudent?.id) return alert('학생 선택이 필요합니다');
-
-        // 🔥 변경 내용 Firestore에 저장
-        await addDoc(collection(db, 'schedule_changes'), {
-          studentId: selectedStudent.id,
-          schedules: changeStudent.schedules,
-          effectiveDate: changeStudent.effectiveDate,
-            prevSchedules: enrichedStudents.find(s => s.id === selectedStudent.id)?.schedules || [],
-          createdAt: new Date().toISOString(),
-        });
-
-        // 🔥 변경된 스케줄을 적용하여 루틴 재생성
-        const routineNum = selectedStudent?.startRoutine || 1;
-        const studentCalendar = document.getElementById('student-calendar');
-
-        if (studentCalendar && studentCalendar.rebuildLessons) {
-          await studentCalendar.rebuildLessons(attendance, routineNum, true, 'changeSchedule'); // ✅ 반드시 'changeSchedule'
-        }
-
-        // 🔄 전체 새로고침
-        if (typeof refreshAllData === 'function') {
-          await refreshAllData();
-        }
-
-        alert('수업 변경이 저장되었습니다!');
-        setChangeStudent({ schedules: [], effectiveDate: '' }); // ✅ 상태 초기화
-      }}
-    >
-      수업 변경 저장
-    </Button>
-
-    {/* 🔹 변경 이력 목록 */}
-    {scheduleChanges
-      .filter(c => c.studentId === selectedStudent?.id)
-      .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate))
-      .map((c, i) => (
-        <div key={i} className="p-2 my-2 border rounded bg-blue-50 text-sm">
-          📅 <b>{c.effectiveDate}</b>부터 변경됨:
-          <br />
-          ⏱️ {c.prevSchedules?.map(s => `${s.day} ${s.time}`).join(', ')} → {c.schedules?.map(s => `${s.day} ${s.time}`).join(', ')}
-          <br />
-          <button
-            onClick={async () => {
-              await deleteDoc(doc(db, 'schedule_changes', c.id));
-              alert('변경이 취소되었습니다.');
-              if (typeof refreshAllData === 'function') {
-                await refreshAllData(); // 즉시 반영
-              }
-            }}
-            className="mt-1 text-xs text-red-500 underline"
-          >
-            변경 취소
-          </button>
-        </div>
-      ))}
-  </div>
-)}
-
 
 {selectedPanel === 'calendar' ? (
   <StudentCalendarModal
     student={selectedStudent}
 
-     attendance={attendance}
-   attendanceDate={selectedDate}
-    onSaveSchedule={(newSchedules, effectiveDate) =>
-      handleScheduleChange(selectedStudent.id, newSchedules, effectiveDate)
-    }
+  
+  
     onRefreshData={refreshAllData}
     inline={true}
-    scheduleChanges={scheduleChanges}
+     holidayDates={[...allHolidaySet]}   // ← 통합 휴일 배열 전달
+    
   />
 ) : null}
      { selectedPanel === 'books' ? (
@@ -1708,8 +1549,13 @@ const removeChangeScheduleField = (i) => {
   <table className="w-full border-collapse">
     <thead>
       <tr>
-        {['일','월','화','수','목','금','토'].map(d => (
-          <th key={d} className="p-2 text-center">{d}</th>
+       {['일','월','화','수','목','금','토'].map((d, i) => (
+          <th
+            key={d}
+            className={`p-2 text-center ${i === 0 || i === 6 ? 'text-red-600' : ''}`}
+         >
+            {d}
+          </th>
         ))}
       </tr>
     </thead>
@@ -1721,12 +1567,18 @@ const removeChangeScheduleField = (i) => {
   const fullDateKey = day
     ? `${paymentsMonth}-${String(day).padStart(2,'0')}`
     : null;
+const isSun = dayIdx === 0;
+  const isSat = dayIdx === 6;
+  const isHoliday = !!fullDateKey && allHolidaySet.has(fullDateKey);
+  const dayNumCls = (isSun || isSat || isHoliday) ? 'text-red-600' : '';
+
 
   return (
     <td key={dayIdx} className={`border p-2 align-top h-24 ${fullDateKey===today?'bg-yellow-100':''}`}>
       {day && (
         <>
-          <div className="font-bold mb-1">{day}</div>
+<div className={`font-bold mb-1 ${dayNumCls}`}>{day}</div>
+
           {(paymentSessions[fullDateKey]||[]).map((label, idx) => (
             <div key={idx}>{label}</div>
           ))}
@@ -1890,7 +1742,10 @@ const removeChangeScheduleField = (i) => {
       <h2 className="text-lg font-bold mb-4">
         {deductionModalStudent.name}님의 차감내역
       </h2>
-
+{/* ✅ 총 사용합계 표시 */}
+  <div className="mb-3 text-sm text-gray-700">
+    총 사용: <b>{totalUsedForSelected}</b>점
+  </div>
       <ul className="space-y-2">
         {pointLogs.length === 0 ? (
           <li className="text-gray-500">로딩 중...</li>
