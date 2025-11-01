@@ -7,7 +7,8 @@ import {
   doc,
   getDoc,
   getDocs,
-  setDoc
+  setDoc,
+ deleteDoc
 } from 'firebase/firestore'
 import {
   Table,
@@ -129,14 +130,16 @@ setSavedSessions(arr)
     fetchSessions()
   }, [selectedRoutine, stdId])
 
-  const enterEditMode = () => {
+ const enterEditMode = () => {
     if (!selectedRoutine) {
       alert('수정할 루틴을 선택하세요.')
       return
     }
     setEditing(true)
     setNewRoutine(selectedRoutine.split('_').pop())
-    setManualDates(savedSessions)
+     // ✅ savedSessions는 {date, routineNumber, session} 객체들이라서
+   //    날짜 문자열 배열로 변환해서 상태에 넣어야 함
+   setManualDates(savedSessions.map(s => s.date))
   }
 
   // ─── D) 출석 데이터 로드 ─────────────────────────
@@ -259,22 +262,50 @@ useEffect(() => {
 
       {/* C: 루틴 선택 & 수정 진입 */}
       <Text weight={500} mt="lg" mb="xs">저장된 루틴 선택</Text>
-      <Group mb="md" spacing="xs">
-        <select
-          value={selectedRoutine}
-          onChange={e=>setSelectedRoutine(e.target.value)}
-          style={{ minWidth: 160, padding: 4 }}
-        >
-          <option value="" disabled>문서를 선택하세요</option>
-          {routineList.map(id => (
-            <option key={id} value={id}>{id}</option>
-          ))}
-        </select>
-        <Button
-          onClick={enterEditMode}
-          disabled={!selectedRoutine}
-        >수정</Button>
-      </Group>
+    <Group mb="md" spacing="xs">
+  <select
+    value={selectedRoutine}
+    onChange={e => setSelectedRoutine(e.target.value)}
+    style={{ minWidth: 160, padding: 4 }}
+  >
+    <option value="" disabled>문서를 선택하세요</option>
+    {routineList.map(id => (
+      <option key={id} value={id}>{id}</option>
+    ))}
+  </select>
+
+  <Button
+    onClick={enterEditMode}
+    disabled={!selectedRoutine}
+  >
+    수정
+  </Button>
+
+  {/* ✅ 루틴 삭제 버튼 추가 */}
+  <Button
+    color="red"
+    disabled={!selectedRoutine}
+    onClick={async () => {
+      if (!selectedRoutine) return;
+      if (!window.confirm(`정말 '${selectedRoutine}' 루틴을 삭제하시겠습니까?`)) return;
+      try {
+       await deleteDoc(doc(db, "routines", selectedRoutine));
+       alert("루틴이 삭제되었습니다.");
+       setSelectedRoutine("");
+       setSavedSessions([]);
+       setManualDates([]);
+       setEditing(false);
+       await loadRoutineList(); // 목록 갱신
+     } catch (e) {
+       console.error(e);
+       alert("삭제 중 오류가 발생했습니다: " + (e?.message || e));
+     }
+    }}
+  >
+    삭제
+  </Button>
+</Group>
+
 
       {/* D/E: 세션 + 출석상태(Select) + 출석시간 + (수정 중)삭제 */}
       <Table striped highlightOnHover>

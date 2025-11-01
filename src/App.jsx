@@ -1,23 +1,39 @@
 import React, { useEffect, useState, useMemo, Suspense } from 'react';
-import ReactQuill from 'react-quill';   
-import 'react-quill/dist/quill.snow.css';   // ← 여기에 먼저!
+import ReactQuill from 'react-quill';
+import 'react-quill/dist/quill.snow.css';
 import './index.css';
+
+// UI 컴포넌트
 import { Card, CardContent } from './components/ui/card';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from './components/ui/table';
+
+// Firebase
 import { db } from './firebase';
-import { doc, collection, addDoc, deleteDoc, updateDoc, getDocs, onSnapshot } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  addDoc,
+  setDoc,
+  getDoc,
+  getDocs,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  increment,
+  serverTimestamp,
+  deleteField,
+} from 'firebase/firestore';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+
+// 기타 유틸/컴포넌트
 import { saveAs } from 'file-saver';
 import { generateScheduleWithRollovers, publicHolidaysKR } from './firebase/logic';
 import StudentRow from './StudentRow';
 import StudentCalendarModal from './StudentCalendarModal';
 import Holidays from 'date-holidays';
-import { increment } from "firebase/firestore";
- import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';  // 상단에 추가
-import { setDoc } from 'firebase/firestore';
-import { getDoc } from 'firebase/firestore';
 
 
  // ─── 공지사항 HTML → 텍스트 변환 유틸 함수 ───
@@ -174,6 +190,11 @@ const [sessionPageIndex, setSessionPageIndex] = useState(0);
  const [studentPage, setStudentPage] = useState(1);
  const studentsPerPage = 8;
 
+ // 저장 스냅샷 목록과 선택된 날짜
+const [savepoints, setSavepoints] = useState([]);
+const [selectedSaveDate, setSelectedSaveDate] = useState('');
+
+
 useEffect(() => {
   const unsub = onSnapshot(
     collection(db, 'high-attendance'),
@@ -299,6 +320,19 @@ useEffect(() => {
     setLoginLogs(logs);
   });
 }, []);
+
+useEffect(() => {
+  (async () => {
+    const snap = await getDocs(collection(db, 'savepoint'));
+    // 문서ID(=날짜) 기준 내림차순
+    const list = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a,b) => b.id.localeCompare(a.id));
+    setSavepoints(list);
+    if (list.length && !selectedSaveDate) setSelectedSaveDate(list[0].id);
+  })();
+}, []);
+
 
 
   const handleRegisterHighStudent = async () => {
@@ -526,6 +560,51 @@ const enrichedStudents = students;
     return map;
   }, [sortedStudentsFull, paymentsMonth]);
 
+// ▶ routines 각 문서의 마지막 날짜에 문서이름을 표시하기 위한 map
+//    형식: { 'YYYY-MM-DD': ['윤준서_7', '김가영_12', ...] }
+const routineLastLabels = useMemo(() => {
+  const map = {};
+
+  routines.forEach((r) => {
+    let dates = [];
+
+    // 1) 최신 스키마: r.students[0].sessions['1'..'12'] 형태
+    if (r.students) {
+      const std = Object.values(r.students || {})[0] || {};
+      const sessions = std.sessions || {};
+      dates = Object.values(sessions)
+        .map((s) => s?.date)
+        .filter(Boolean);
+    }
+    // 2) 예전 스키마: r.lessons 배열 형태
+    else if (Array.isArray(r.lessons)) {
+      dates = r.lessons.map((l) => l?.date).filter(Boolean);
+    }
+    // 3) 최후 fallback: 문서 최상단에 '1','2'...처럼 세션이 필드로 있는 형태
+    else {
+      dates = Object.values(r)
+        .filter(
+          (v) =>
+            v &&
+            typeof v === "object" &&
+            "date" in v &&
+            "session" in v
+        )
+        .map((v) => v.date)
+        .filter(Boolean);
+    }
+
+    if (dates.length === 0) return;
+
+    dates.sort(); // YYYY-MM-DD 문자열이므로 사전순 정렬 == 날짜 오름차순
+    const lastDate = dates[dates.length - 1];
+
+    if (!map[lastDate]) map[lastDate] = [];
+    map[lastDate].push(r.id); // ← 문서이름(예: '윤준서_7')
+  });
+
+  return map;
+}, [routines]);
 
 
 // ⇒ routines 컬렉션에서 lessons 그대로 가져와 보강·이월 반영 후 첫회차만 뽑기
@@ -1003,7 +1082,135 @@ const totalUsedForSelected = useMemo(() => {
     </div>
   );
 
-  
+  // ✅ 포인트 저장 핸들러
+const handleSavePoints = async () => {
+  if (!window.confirm("현재 모든 학생의 포인트 스냅샷을 저장하시겠습니까?")) return;
+
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const data = {};
+
+  // 학생별 point_logs 집계용 맵
+  const logsByStudentId = pointLogs.reduce((map, log) => {
+    const sid = log.studentId;
+    if (!sid) return map;
+    if (!map[sid]) map[sid] = [];
+    map[sid].push({
+      item: log.item || '',
+      point: Number(log.point) || 0,
+      date: log.date || (log.createdAt || '').slice(0,10) || ''
+    });
+    return map;
+  }, {});
+
+  students.forEach(s => {
+    const categories = pointFields.reduce((acc, key) => {
+      acc[key] = (pointsData[s.id]?.[key] || 0);
+      return acc;
+    }, {});
+
+    const total = Object.values(categories).reduce((a,b)=>a+(b||0),0);
+    const usedLogs = logsByStudentId[s.id] || [];
+    const usedPoints = usedLogs.reduce((sum, l) => sum + (Number(l.point)||0), 0);
+
+    data[s.name] = {
+      name: s.name,
+      totalPoints: total,
+      availablePoints: s.availablePoints || 0,
+      usedPoints: usedPoints,      // ✅ 사용포인트
+      usedLogs: usedLogs,          // ✅ 사용내역(배열)
+      categories: categories       // ✅ 카테고리별 스냅샷(복원 정확도↑)
+    };
+  });
+
+  await setDoc(doc(db, "savepoint", today), {
+    createdAt: serverTimestamp(),
+    data,
+  });
+
+  alert(`✅ ${today} 기준 포인트 스냅샷이 저장되었습니다.`);
+};
+
+
+// ✅ 포인트 리셋 핸들러
+const handleResetPoints = async () => {
+  if (!window.confirm("⚠️ 모든 학생의 포인트와 사용내역을 0으로 초기화하시겠습니까? (point_logs도 모두 삭제)")) return;
+
+  // 1) 학생 포인트 초기화
+  for (const s of students) {
+    await updateDoc(doc(db, "students", s.id), {
+      points: { 출석: 0, 숙제: 0, 수업태도: 0, 시험: 0, 문제집완료: 0 },
+      totalPoints: 0,
+      availablePoints: 0,
+    });
+  }
+
+  // 2) point_logs 전부 삭제
+  for (const log of pointLogs) {
+    try {
+      await deleteDoc(doc(db, 'point_logs', log.id));
+    } catch (e) {
+      console.error('point_logs 삭제 중 오류:', e);
+    }
+  }
+
+  alert("🧹 모든 포인트와 사용내역이 초기화되었습니다.");
+};
+
+const handleRestorePoints = async () => {
+  if (!selectedSaveDate) return alert("복원할 저장본 날짜를 선택해 주세요.");
+  if (!window.confirm(`🔁 ${selectedSaveDate} 저장본으로 복원하시겠습니까? \n(현재 point_logs는 삭제되고 저장본 usedLogs로 대체됩니다)`)) return;
+
+  const snap = await getDoc(doc(db, 'savepoint', selectedSaveDate));
+  if (!snap.exists()) {
+    alert("선택한 저장본을 찾을 수 없습니다.");
+    return;
+  }
+
+  const { data } = snap.data() || {};
+  if (!data) {
+    alert("저장된 데이터가 비어 있습니다.");
+    return;
+  }
+
+  // 1) point_logs 전체 삭제
+  for (const log of pointLogs) {
+    try { await deleteDoc(doc(db, 'point_logs', log.id)); } catch(e){ console.error(e); }
+  }
+
+  // 2) 학생 포인트 및 로그 복원
+  for (const s of students) {
+    const saved = data[s.name];
+    if (!saved) continue;
+
+    // 카테고리 복원(없으면 총점을 '출석'으로 몰아넣는 fallback)
+    const categories = saved.categories && typeof saved.categories === 'object'
+      ? saved.categories
+      : { 출석: saved.totalPoints || 0, 숙제: 0, 수업태도: 0, 시험: 0, 문제집완료: 0 };
+
+    await updateDoc(doc(db, 'students', s.id), {
+      points: categories,
+      totalPoints: saved.totalPoints || 0,
+      availablePoints: saved.availablePoints ?? (saved.totalPoints || 0), // 스냅샷 값 우선
+    });
+
+    // usedLogs 복원 → point_logs 재작성
+    if (Array.isArray(saved.usedLogs)) {
+      for (const L of saved.usedLogs) {
+        await addDoc(collection(db, 'point_logs'), {
+          studentId: s.id,
+          name: s.name,
+          item: L.item || '',
+          point: Number(L.point) || 0,
+          date: L.date || new Date().toISOString().slice(0,10),
+          createdAt: new Date().toISOString()
+        });
+      }
+    }
+  }
+
+  alert(`✅ ${selectedSaveDate} 저장본으로 복원 완료!`);
+};
+
   // ✅ 가용포인트 초기 동기화: 총포인트와 같지 않은 문서에만 적용
  // useEffect(() => {
   //  students.forEach(async (stu) => {
@@ -1027,7 +1234,7 @@ const totalUsedForSelected = useMemo(() => {
         <TabsList>
           <TabsTrigger value="attendance">출석현황</TabsTrigger>
           <TabsTrigger value="students">학생관리</TabsTrigger>
-          <TabsTrigger value="payments">결제관리</TabsTrigger>
+          <TabsTrigger value="payments">수업마지막날</TabsTrigger>
           <TabsTrigger value="paid">결제완료</TabsTrigger>
           <TabsTrigger value="points">포인트관리</TabsTrigger>
           <TabsTrigger value="shop">포인트상점</TabsTrigger>
@@ -1582,6 +1789,12 @@ const isSun = dayIdx === 0;
           {(paymentSessions[fullDateKey]||[]).map((label, idx) => (
             <div key={idx}>{label}</div>
           ))}
+
+           {(routineLastLabels[fullDateKey] || []).map((docId, i) => (
+   <div key={`last-${i}`} className="text-[11px] font-semibold text-red-700">
+     {docId}   {/* 루틴 문서이름 그대로 표시 */}
+   </div>
+ ))}
         </>
       )}
     </td>
@@ -1681,6 +1894,24 @@ const isSun = dayIdx === 0;
   <Card>
     <CardContent className="space-y-4">
       <h2 className="text-xl font-semibold">포인트 관리</h2>
+      <div className="flex gap-2 mb-4">
+  <Button onClick={handleSavePoints} variant="default">💾 저장</Button>
+  <Button onClick={handleResetPoints} variant="destructive">♻️ 리셋</Button>
+    {/* 저장본 선택 & 복원 */}
+  <div className="flex items-center gap-2 ml-auto">
+    <select
+      className="border rounded px-2 py-1"
+      value={selectedSaveDate}
+      onChange={(e) => setSelectedSaveDate(e.target.value)}
+    >
+      {savepoints.map(sp => (
+        <option key={sp.id} value={sp.id}>{sp.id}</option>
+      ))}
+    </select>
+    <Button variant="outline" onClick={handleRestorePoints}>🔁 복원</Button>
+  </div>
+</div>
+
       <Table>
         <TableHeader>
           <TableRow>
