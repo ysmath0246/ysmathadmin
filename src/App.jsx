@@ -194,7 +194,12 @@ const [sessionPageIndex, setSessionPageIndex] = useState(0);
 const [savepoints, setSavepoints] = useState([]);
 const [selectedSaveDate, setSelectedSaveDate] = useState('');
 
+  // ✅ 수강신청(enrollments) 관리
+   const [enrollments, setEnrollments] = useState([]);
+  const [selectedSlotKey, setSelectedSlotKey] = useState(null); // 이전 코드 있어도 OK
+  const [enrollGroup, setEnrollGroup] = useState('elementary'); // ✅ 초등/중등 선택
 
+  
 useEffect(() => {
   const unsub = onSnapshot(
     collection(db, 'high-attendance'),
@@ -1226,6 +1231,186 @@ const handleRestorePoints = async () => {
     //  }
    // });
  // }, [students, pointsData]);
+  // ✅ 수강신청 데이터(초등/중등 합쳐서) 요일·시간별로 묶기
+  const groupedEnrollments = useMemo(() => {
+    const map = {};
+    enrollments.forEach(e => {
+      const group = e.group || '';      // elementary / middle
+      const day   = e.day || '';        // "월"~"금"
+      const time  = e.time || '';       // "5시", "3시30분" 등
+      const key   = `${group}|${day}|${time}`;
+
+      if (!map[key]) {
+        map[key] = {
+          key,
+          group,
+          day,
+          time,
+          applied: 0,
+          waitlist: 0,
+          pending: 0,
+          list: [],
+        };
+      }
+
+      map[key].list.push(e);
+      const status = e.status || 'applied';
+      if (status === 'applied') map[key].applied += 1;      // 신청
+      else if (status === 'waitlist') map[key].waitlist += 1; // 예비
+      else map[key].pending += 1;                           // 그 외(대기/취소 등)
+    });
+
+    const groupOrder = { elementary: 0, middle: 1 };
+    const dayOrder = { 일: 0, 월: 1, 화: 2, 수: 3, 목: 4, 금: 5, 토: 6 };
+
+    return Object.values(map).sort((a, b) => {
+      const gDiff = (groupOrder[a.group] ?? 99) - (groupOrder[b.group] ?? 99);
+      if (gDiff !== 0) return gDiff;
+      const dDiff = (dayOrder[a.day] ?? 99) - (dayOrder[b.day] ?? 99);
+      if (dDiff !== 0) return dDiff;
+      return (a.time || '').localeCompare(b.time || '');
+    });
+  }, [enrollments]);
+
+  const selectedSlot = useMemo(
+    () => groupedEnrollments.find(s => s.key === selectedSlotKey) || null,
+    [groupedEnrollments, selectedSlotKey]
+  );
+
+  // 선택된 슬롯에서 신청/예비/기타 리스트 뽑기
+  const appliedList = useMemo(() => {
+    if (!selectedSlot) return [];
+    return selectedSlot.list.filter(e => (e.status || 'applied') === 'applied');
+  }, [selectedSlot]);
+
+  const waitList = useMemo(() => {
+    if (!selectedSlot) return [];
+    return selectedSlot.list.filter(e => (e.status || '') === 'waitlist');
+  }, [selectedSlot]);
+
+  const pendingList = useMemo(() => {
+    if (!selectedSlot) return [];
+    return selectedSlot.list.filter(e => {
+      const st = e.status || 'applied';
+      return st !== 'applied' && st !== 'waitlist';
+    });
+  }, [selectedSlot]);
+
+  // ✅ 수강신청(enrollments) 실시간 구독
+  useEffect(() => {
+    const ref = collection(db, 'enrollments');
+    return onSnapshot(ref, qs => {
+      const list = qs.docs.map(d => ({ id: d.id, ...d.data() }));
+      setEnrollments(list);
+    });
+  }, []);
+
+
+  // ✅ 수강신청 전체 리셋 (enrollments + enrollments_by_student 모두 삭제)
+  const handleResetEnrollments = async () => {
+    if (!window.confirm('⚠️ enrollments / enrollments_by_student 컬렉션의 모든 문서를 삭제합니다. 계속할까요?')) return;
+
+    try {
+      // enrollments 전체 삭제
+      const snap1 = await getDocs(collection(db, 'enrollments'));
+      await Promise.all(snap1.docs.map(d => deleteDoc(d.ref)));
+
+      // enrollments_by_student 전체 삭제
+      const snap2 = await getDocs(collection(db, 'enrollments_by_student'));
+      await Promise.all(snap2.docs.map(d => deleteDoc(d.ref)));
+
+      alert('수강신청 데이터가 모두 삭제되었습니다.');
+    } catch (e) {
+      console.error('수강신청 리셋 오류:', e);
+      alert('삭제 중 오류가 발생했습니다. (콘솔을 확인해주세요)');
+    }
+  };
+
+
+  // ✅ 수강신청 시간표 (수강신청 페이지와 동일) :contentReference[oaicite:1]{index=1}
+  const enrollSchedules = useMemo(
+    () => ({
+      elementary: {
+        화: ['2시', '3시', '4시'],
+        수: ['2시', '3시', '4시'],
+        목: ['2시', '3시', '4시'],
+        금: ['3시', '4시'],
+      },
+      middle: {
+        월: ['3시30분', '5시', '6시30분'],
+        화: ['5시', '6시30분'],
+        수: ['5시', '6시30분'],
+        목: ['5시', '6시30분'],
+        금: ['5시', '6시30분'],
+      },
+    }),
+    []
+  );
+
+  const enrollLabelByGroup = { elementary: '초등부', middle: '중등부' };
+
+  // ✅ (group, day, time) 별 신청/예비/대기 인원 집계
+  const enrollCounts = useMemo(() => {
+    const map = {};
+    enrollments.forEach((e) => {
+      const group = e.group || '';
+      const day = e.day || '';
+      const time = e.time || '';
+      const key = `${group}|${day}|${time}`;
+
+      if (!map[key]) {
+        map[key] = { applied: 0, reserve: 0, waitlist: 0 };
+      }
+      const st = e.status || 'applied';
+      if (st === 'reserve') map[key].reserve += 1;     // 예비
+      else if (st === 'waitlist') map[key].waitlist += 1; // 대기
+      else map[key].applied += 1;                      // 신청(기본)
+    });
+    return map;
+  }, [enrollments]);
+
+  // ✅ 특정 슬롯 클릭 시 학생 이름을 팝업으로 보여주는 함수
+  const showEnrollmentPopup = (group, day, time) => {
+    const list = enrollments.filter(
+      (e) =>
+        (e.group || '') === group &&
+        (e.day || '') === day &&
+        (e.time || '') === time
+    );
+
+    if (list.length === 0) {
+      alert(`[${enrollLabelByGroup[group]} / ${day} ${time}]\n\n신청 인원이 없습니다.`);
+      return;
+    }
+
+    const applied = [];
+    const reserve = [];
+    const waitlist = [];
+
+    list.forEach((e) => {
+      const name = e.studentName || e.name || '(이름 없음)';
+      const st = e.status || 'applied';
+      if (st === 'reserve') reserve.push(name);
+      else if (st === 'waitlist') waitlist.push(name);
+      else applied.push(name);
+    });
+
+    const msg =
+      `[${enrollLabelByGroup[group]} / ${day} ${time}]\n\n` +
+      `🟢 신청 (${applied.length}명)\n` +
+      (applied.length ? applied.join(', ') : '-') +
+      `\n\n🟡 예비 (${reserve.length}명)\n` +
+      (reserve.length ? reserve.join(', ') : '-') +
+      `\n\n⚪ 대기 (${waitlist.length}명)\n` +
+      (waitlist.length ? waitlist.join(', ') : '-');
+
+    window.alert(msg);
+  };
+
+
+
+
+
 
   return (
     <div className="p-6">
@@ -1244,6 +1429,7 @@ const handleRestorePoints = async () => {
            <TabsTrigger value="high">고등부 관리</TabsTrigger>
             <TabsTrigger value="high-payments">고등부 결제</TabsTrigger>
              <TabsTrigger value="high-class-status">수업현황</TabsTrigger>
+               <TabsTrigger value="enrollments">수강신청</TabsTrigger>
             <TabsTrigger value="login">로그인기록</TabsTrigger>
 
 
@@ -2502,9 +2688,120 @@ const isSun = dayIdx === 0;
     </section>
   </div>
 </TabsContent>
+<TabsContent value="enrollments">
+  <Card>
+    <CardContent className="space-y-6">
+      {/* 상단: 제목 + 전체 리셋 버튼 */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <h2 className="text-xl font-semibold">
+          수강신청 현황
+          <span className="ml-2 text-sm text-gray-500">
+            ({enrollLabelByGroup[enrollGroup]})
+          </span>
+        </h2>
+        <div className="flex items-center gap-2">
+          {/* 그룹 토글 버튼 */}
+          <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+            {(['elementary', 'middle']).map((g) => (
+              <button
+                key={g}
+                type="button"
+                onClick={() => setEnrollGroup(g)}
+                className={
+                  'px-3 py-1 text-sm font-semibold ' +
+                  (enrollGroup === g
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-white text-gray-700')
+                }
+              >
+                {enrollLabelByGroup[g]}
+              </button>
+            ))}
+          </div>
 
+          {/* 전체 리셋 */}
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={handleResetEnrollments}
+          >
+            전체 리셋 (enrollments + enrollments_by_student)
+          </Button>
+        </div>
+      </div>
 
+      {/* 본문: 수강신청 표 (수강신청 페이지와 같은 모양) */}
+      <div className="overflow-x-auto">
+        <table
+          className="min-w-[560px] w-full border border-slate-200 text-sm"
+          style={{ borderCollapse: 'collapse' }}
+        >
+          <thead>
+            <tr className="bg-slate-50">
+              <th className="text-left px-3 py-2 border-b border-slate-200 w-20">
+                요일
+              </th>
+              <th className="text-left px-3 py-2 border-b border-slate-200">
+                시간 (신청 / 예비 / 대기)
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(enrollSchedules[enrollGroup] || {}).map(
+              ([day, times]) => (
+                <tr key={day}>
+                  <td className="px-3 py-2 border-b border-slate-100 font-semibold whitespace-nowrap">
+                    {day}
+                  </td>
+                  <td className="px-3 py-2 border-b border-slate-100">
+                    <div className="flex flex-wrap gap-2">
+                      {times.map((time) => {
+                        const key = `${enrollGroup}|${day}|${time}`;
+                        const cnt = enrollCounts[key] || {
+                          applied: 0,
+                          reserve: 0,
+                          waitlist: 0,
+                        };
+                        const total =
+                          cnt.applied + cnt.reserve + cnt.waitlist;
 
+                        return (
+                          <button
+                            key={`${day}-${time}`}
+                            type="button"
+                            onClick={() =>
+                              showEnrollmentPopup(enrollGroup, day, time)
+                            }
+                            className="px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-blue-50 cursor-pointer text-xs md:text-sm whitespace-nowrap"
+                            title={`${day} ${time}`}
+                          >
+                            <div className="font-semibold">{time}</div>
+                            <div className="mt-1 text-[11px] text-slate-600">
+                              신청 {cnt.applied} / 예비 {cnt.reserve} / 대기{' '}
+                              {cnt.waitlist}
+                              <span className="ml-1 text-slate-400">
+                                (총 {total})
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </td>
+                </tr>
+              )
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-xs text-gray-500">
+        시간 버튼을 클릭하면 해당 시간대의 신청 / 예비 / 대기 학생 이름이 팝업으로
+        표시됩니다.
+      </p>
+    </CardContent>
+  </Card>
+</TabsContent>
 
 
 
