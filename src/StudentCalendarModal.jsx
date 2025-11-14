@@ -43,47 +43,48 @@ export default function StudentCalendarModal({
   const [attendanceData, setAttendanceData] = useState({});
 
   // 날짜 클릭(추가/제거)
-  const handleDayClick = (day) => {
-    const yyyy = day.getFullYear();
-    const mm = String(day.getMonth() + 1).padStart(2, '0');
-    const dd = String(day.getDate()).padStart(2, '0');
-    const d = `${yyyy}-${mm}-${dd}`;
+  // 날짜 클릭(추가/제거)
+const handleDayClick = (day) => {
+  const yyyy = day.getFullYear();
+  const mm = String(day.getMonth() + 1).padStart(2, '0');
+  const dd = String(day.getDate()).padStart(2, '0');
+  const d = `${yyyy}-${mm}-${dd}`;
 
-    setManualDates((md) => {
-      const exists = md.includes(d);
+  setManualDates((md) => {
+    const exists = md.includes(d);
 
-      if (exists) {
-        // 날짜 선택 해제 : 달력 + 표에서 같이 제거
-        if (editing) {
-          setSavedSessions((sessions) => sessions.filter((s) => s.date !== d));
-        }
-        return md.filter((x) => x !== d);
-      } else {
-        // 새 날짜 추가 : 달력 + 표에 같이 추가
-        if (editing) {
-          setSavedSessions((sessions) => {
-            // 이미 있으면 또 추가 X
-            if (sessions.some((s) => s.date === d)) return sessions;
-
-            const maxSession = sessions.reduce(
-              (m, s) => Math.max(m, s.session || 0),
-              0
-            );
-
-            return [
-              ...sessions,
-              {
-                date: d,
-                session: maxSession + 1, // 화면에서만 쓰는 임시 회차
-                routineNumber: Number(newRoutine) || 0,
-              },
-            ];
-          });
-        }
-        return [...md, d];
+    if (exists) {
+      // 날짜 선택 해제 : 달력 + 표에서 같이 제거
+      if (editing) {
+        setSavedSessions((sessions) => sessions.filter((s) => s.date !== d));
       }
-    });
-  };
+      return md.filter((x) => x !== d);
+    } else {
+      // 새 날짜 추가 : 달력 + 표에 같이 추가
+      if (editing) {
+        setSavedSessions((sessions) => {
+          // 이미 있으면 또 추가 X
+          if (sessions.some((s) => s.date === d)) return sessions;
+
+          const maxSession = sessions.reduce(
+            (m, s) => Math.max(m, s.session || 0),
+            0
+          );
+
+          return [
+            ...sessions,
+            {
+              date: d,
+              session: maxSession + 1, // 화면에서만 쓰는 임시 회차
+              routineNumber: Number(newRoutine) || 0,
+            },
+          ];
+        });
+      }
+      return [...md, d];
+    }
+  });
+};
 
   // 루틴 저장 / 수정 저장
   const handleSave = async () => {

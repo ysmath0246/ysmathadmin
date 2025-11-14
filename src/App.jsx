@@ -25,7 +25,8 @@ import {
   increment,
   serverTimestamp,
   deleteField,
-} from 'firebase/firestore';
+ query, where, limit } from 'firebase/firestore';
+
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // 기타 유틸/컴포넌트
@@ -319,8 +320,8 @@ const [loginLogs, setLoginLogs] = useState([]);
  };
 useEffect(() => {
   const ref = collection(db, 'parentLogins');
-  return onSnapshot(ref, qs => {
-    const logs = qs.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  return onSnapshot(ref, (qs) => {
+    const logs = qs.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     logs.sort((a, b) => (b.loginTime || '').localeCompare(a.loginTime || ''));
     setLoginLogs(logs);
   });
@@ -429,10 +430,22 @@ const handleEditHighStudent = (s) => {
     setPaymentRoutineNumber('');
   };
   // ✅ Firestore 실시간 구독
-  useEffect(() => {
-    const ref = collection(db, 'students');
-    return onSnapshot(ref, qs => setStudents(qs.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
-  }, []);
+ useEffect(() => {
+  const ref = collection(db, 'students');
+  return onSnapshot(ref, (qs) => {
+    const list = qs.docs.map((docSnap) => {
+      const data = docSnap.data() || {};
+      return {
+        id: docSnap.id,
+        ...data,
+        // 🔹 schedules가 없거나 잘못된 값이면 항상 빈 배열로
+        schedules: Array.isArray(data.schedules) ? data.schedules : [],
+      };
+    });
+    setStudents(list);
+  });
+}, []);
+
 
   useEffect(() => {
     const ref = collection(db, 'attendance');
@@ -813,8 +826,17 @@ const handleEditNotice = (notice) => {
     });
     setAttendance(all);
   
-    const studentSnapshot = await getDocs(collection(db, 'students'));
-    setStudents(studentSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+   const studentSnapshot = await getDocs(collection(db, 'students'));
+const list = studentSnapshot.docs.map((docSnap) => {
+  const data = docSnap.data() || {};
+  return {
+    id: docSnap.id,
+    ...data,
+    schedules: Array.isArray(data.schedules) ? data.schedules : [],
+  };
+});
+setStudents(list);
+
   
     const makeupSnapshot = await getDocs(collection(db, 'makeups'));
     setMakeups(makeupSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -1368,6 +1390,60 @@ const handleRestorePoints = async () => {
     });
     return map;
   }, [enrollments]);
+
+  // ✅ (관리자 임시) 보여주기용 인원 집계
+const enrollHoldCounts = useMemo(() => {
+  const map = {};
+  enrollments.forEach((e) => {
+    if (!e.adminHold) return;
+    const key = `${e.group || ''}|${e.day || ''}|${e.time || ''}`;
+    if (!map[key]) map[key] = { applied: 0, reserve: 0, waitlist: 0 };
+    const st = e.status || 'applied';
+    map[key][st] = (map[key][st] || 0) + 1;
+  });
+  return map;
+}, [enrollments]);
+
+// ✅ 보여주기용 인원 +1
+const addShowApplicant = async (group, day, time, status = 'applied') => {
+  try {
+    await addDoc(collection(db, 'enrollments'), {
+      group, day, time,
+      status,                 // 'applied' | 'reserve' | 'waitlist'
+      adminHold: true,        // ← 표시용 플래그
+      studentName: '(보여주기)',
+      createdAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('보여주기 인원 추가 오류:', e);
+    alert('보여주기 인원 추가 중 오류가 발생했습니다.');
+  }
+};
+
+// ✅ 보여주기용 인원 -1 (가장 최근 1건 삭제)
+const removeShowApplicant = async (group, day, time, status = 'applied') => {
+  try {
+    const qy = query(
+      collection(db, 'enrollments'),
+      where('group', '==', group),
+      where('day', '==', day),
+      where('time', '==', time),
+      where('status', '==', status),
+      where('adminHold', '==', true),
+      limit(1)
+    );
+    const snap = await getDocs(qy);
+    if (snap.empty) {
+      alert('보여주기 인원이 없습니다.');
+      return;
+    }
+    await deleteDoc(snap.docs[0].ref);
+  } catch (e) {
+    console.error('보여주기 인원 삭제 오류:', e);
+    alert('보여주기 인원 삭제 중 오류가 발생했습니다.');
+  }
+};
+
 
   // ✅ 특정 슬롯 클릭 시 학생 이름을 팝업으로 보여주는 함수
   const showEnrollmentPopup = (group, day, time) => {
@@ -2756,36 +2832,51 @@ const isSun = dayIdx === 0;
                   <td className="px-3 py-2 border-b border-slate-100">
                     <div className="flex flex-wrap gap-2">
                       {times.map((time) => {
-                        const key = `${enrollGroup}|${day}|${time}`;
-                        const cnt = enrollCounts[key] || {
-                          applied: 0,
-                          reserve: 0,
-                          waitlist: 0,
-                        };
-                        const total =
-                          cnt.applied + cnt.reserve + cnt.waitlist;
+   const key = `${enrollGroup}|${day}|${time}`;
+   const cnt = enrollCounts[key] || { applied: 0, reserve: 0, waitlist: 0 };
+   const total = cnt.applied + cnt.reserve + cnt.waitlist;
+   const hold = enrollHoldCounts[key] || { applied: 0, reserve: 0, waitlist: 0 };
 
-                        return (
-                          <button
-                            key={`${day}-${time}`}
-                            type="button"
-                            onClick={() =>
-                              showEnrollmentPopup(enrollGroup, day, time)
-                            }
-                            className="px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-blue-50 cursor-pointer text-xs md:text-sm whitespace-nowrap"
-                            title={`${day} ${time}`}
-                          >
-                            <div className="font-semibold">{time}</div>
-                            <div className="mt-1 text-[11px] text-slate-600">
-                              신청 {cnt.applied} / 예비 {cnt.reserve} / 대기{' '}
-                              {cnt.waitlist}
-                              <span className="ml-1 text-slate-400">
-                                (총 {total})
-                              </span>
-                            </div>
-                          </button>
-                        );
-                      })}
+   return (
+     <div
+       key={`${day}-${time}`}
+       className="px-2 py-2 rounded-lg border border-slate-300 bg-white text-xs md:text-sm whitespace-nowrap flex flex-col items-start"
+       title={`${day} ${time}`}
+     >
+       {/* 기존 팝업 버튼 */}
+       <button
+         type="button"
+         onClick={() => showEnrollmentPopup(enrollGroup, day, time)}
+         className="px-3 py-1 rounded-md bg-white hover:bg-blue-50 border border-slate-300"
+       >
+         <div className="font-semibold">{time}</div>
+         <div className="mt-1 text-[11px] text-slate-600">
+           신청 {cnt.applied} / 예비 {cnt.reserve} / 대기 {cnt.waitlist}
+           <span className="ml-1 text-slate-400">(총 {total})</span>
+         </div>
+       </button>
+
+       {/* 보여주기 컨트롤 */}
+       <div className="mt-2 flex items-center gap-1 text-[11px] text-slate-600">
+         <span className="text-slate-400">보여주기(신청): {hold.applied || 0}</span>
+         <button
+           type="button"
+           onClick={() => addShowApplicant(enrollGroup, day, time, 'applied')}
+           className="px-2 py-[2px] border rounded hover:bg-slate-50"
+         >
+           +1
+         </button>
+         <button
+           type="button"
+           onClick={() => removeShowApplicant(enrollGroup, day, time, 'applied')}
+           className="px-2 py-[2px] border rounded hover:bg-slate-50"
+         >
+           -1
+         </button>
+       </div>
+     </div>
+   );
+ })}
                     </div>
                   </td>
                 </tr>
@@ -2809,11 +2900,11 @@ const isSun = dayIdx === 0;
 
 
 
-
 <TabsContent value="login">
   <Card>
     <CardContent>
       <h2 className="text-xl font-semibold mb-4">학부모 로그인 기록</h2>
+
       <Table>
         <TableHeader>
           <TableRow>
@@ -2822,49 +2913,66 @@ const isSun = dayIdx === 0;
             <TableHead>삭제</TableHead>
           </TableRow>
         </TableHeader>
+
         <TableBody>
           {loginLogs.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={2} className="text-center text-gray-500">
+              {/* 👉 컬럼이 3개라 colSpan도 3으로 맞추기 */}
+              <TableCell colSpan={3} className="text-center text-gray-500">
                 로그인 기록이 없습니다.
               </TableCell>
             </TableRow>
-          
           ) : (
-           // 페이지 단위로 자른 뒤 렌더링
+            // 페이지 단위로 슬라이스해서 렌더링
             loginLogs
-              .slice((currentPage - 1) * logsPerPage, currentPage * logsPerPage)
-              .map(log => (
-              <TableRow key={log.id}>
-                <TableCell>{log.studentName}</TableCell>
-                 <TableCell>
-                  {log.loginTime
-                    ? new Date(log.loginTime)
-                        .toLocaleString('ko-KR', { hour12: false })
-                    : ''}
-                </TableCell>
-                <TableCell>
-                  <Button
-                    size="xs"
-                   variant="destructive"
-                    onClick={() => handleDeleteLog(log.id)}
-                  >
-                    삭제
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))
+              .slice(
+                (currentPage - 1) * logsPerPage,
+                currentPage * logsPerPage
+              )
+              .map((log) => {
+                // ✅ loginTime 이 string이든 Timestamp든 둘 다 처리
+                let loginDate = '';
+                if (log.loginTime) {
+                  let d;
+                  if (log.loginTime.toDate) {
+                    // Firestore Timestamp
+                    d = log.loginTime.toDate();
+                  } else {
+                    // ISO 문자열 / 일반 문자열
+                    d = new Date(log.loginTime);
+                  }
+                  if (!isNaN(d)) {
+                    loginDate = d.toLocaleString('ko-KR', { hour12: false });
+                  }
+                }
+
+                return (
+                  <TableRow key={log.id}>
+                    <TableCell>{log.studentName}</TableCell>
+                    <TableCell>{loginDate}</TableCell>
+                    <TableCell>
+                      <Button
+                        size="xs"
+                        variant="destructive"
+                        onClick={() => handleDeleteLog(log.id)}
+                      >
+                        삭제
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
           )}
         </TableBody>
       </Table>
 
- {/* ─── 페이지네이션 컨트롤 ─── */}
+      {/* ─── 페이지네이션 컨트롤 ─── */}
       {loginLogs.length > logsPerPage && (
         <div className="flex justify-center gap-2 mt-2">
           <Button
             size="sm"
             disabled={currentPage === 1}
-            onClick={() => setCurrentPage(p => p - 1)}
+            onClick={() => setCurrentPage((p) => p - 1)}
           >
             이전
           </Button>
@@ -2873,19 +2981,18 @@ const isSun = dayIdx === 0;
           </span>
           <Button
             size="sm"
-            disabled={currentPage === Math.ceil(loginLogs.length / logsPerPage)}
-            onClick={() => setCurrentPage(p => p + 1)}
+            disabled={
+              currentPage === Math.ceil(loginLogs.length / logsPerPage)
+            }
+            onClick={() => setCurrentPage((p) => p + 1)}
           >
             다음
           </Button>
         </div>
       )}
-
     </CardContent>
   </Card>
 </TabsContent>
-
-
 
 
 

@@ -1,2 +1,13 @@
-# 서비스 계정 키 무시
-serviceAccountKey.json
+type NUL > .gitignore
+echo node_modules/>> .gitignore
+echo node_modules/.cache/>> .gitignore
+echo dist/>> .gitignore
+echo .DS_Store>> .gitignore
+echo *.log>> .gitignore
+echo npm-debug.log*>> .gitignore
+echo yarn-error.log*>> .gitignore
+echo pnpm-debug.log*>> .gitignore
+echo .env>> .gitignore
+echo .env.*>> .gitignore
+echo .vscode/>> .gitignore
+echo .idea/>> .gitignore
